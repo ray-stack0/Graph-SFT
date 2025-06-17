@@ -74,7 +74,7 @@ def get_tensor_memory(data):
     return data.element_size() * data.nelement() / 1024 / 1024
 
 
-def save_ckpt(net, opt, epoch, save_dir, filename):
+def save_ckpt(net, opt, epoch, save_dir, filename, best_metric=None):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -83,7 +83,8 @@ def save_ckpt(net, opt, epoch, save_dir, filename):
         state_dict[key] = state_dict[key].cpu()
 
     torch.save(
-        {"epoch": epoch, "state_dict": state_dict, "opt_state": opt.opt.state_dict()},
+        {"epoch": epoch, "state_dict": state_dict, "opt_state": opt.opt.state_dict(), 
+         "scheduler_state": opt.scheduler.state_dict(), "best_metric": best_metric},
         os.path.join(save_dir, filename),
     )
 
@@ -221,6 +222,12 @@ class AverageMeterForDict(object):
     def print(self):
         info = self.get_info()
         print('-- ' + info)
+    
+    def get_avg_dict(self):
+        avg_dict = {}
+        for key, elem in self.metrics.items():
+            avg_dict[key] = elem.avg
+        return avg_dict
 
 
 class ScalarMeter(object):

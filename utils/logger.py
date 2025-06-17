@@ -28,7 +28,7 @@ class Logger:
         if self.enable_flags['writer']:
             self.writer = SummaryWriter(self.log_dir)
 
-            filename = 'log/log_{}.log'.format(self.date_str)
+            filename = '{}/train_log.log'.format(self.log_dir)
             for handler in logging.root.handlers[:]:
                 logging.root.removeHandler(handler)
             logging.basicConfig(filename=filename,

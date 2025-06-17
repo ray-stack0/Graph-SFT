@@ -56,11 +56,12 @@ class TrajPredictionEvaluator():
         eval_out['minade_1'] = res_1['minADE']
         eval_out['minfde_1'] = res_1['minFDE']
         eval_out['mr_1'] = res_1['MR']
-        eval_out['brier_fde_1'] = res_1['brier-minFDE']
+
 
         eval_out['minade_k'] = res_k['minADE']
         eval_out['minfde_k'] = res_k['minFDE']
         eval_out['mr_k'] = res_k['MR']
         eval_out['brier_fde_k'] = res_k['brier-minFDE']
+        eval_out['brier_ade_k'] = res_k['brier-minADE']
 
         return eval_out

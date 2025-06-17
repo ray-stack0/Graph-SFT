@@ -17,7 +17,7 @@ class Loader:
         Get and return dataset, network, loss_fn, optimizer, evaluator
     '''
 
-    def __init__(self, args, device, is_ddp=False, world_size=1, local_rank=0, verbose=True):
+    def __init__(self, args, device, is_ddp=False, world_size=1, local_rank=0, verbose=True, logger = None):
         self.args = args
         self.device = device
         self.is_ddp = is_ddp
@@ -25,13 +25,28 @@ class Loader:
         self.local_rank = local_rank
         self.resume = False
         self.verbose = verbose
+        self.logger = logger
 
         self.print('[Loader] load adv_cfg from {}'.format(self.args.adv_cfg_path))
         self.adv_cfg = import_module(self.args.adv_cfg_path).AdvCfg()
 
     def print(self, info):
         if self.verbose:
-            print(info)
+            if self.logger is not None:
+                self.logger.print(info)
+            else:
+                print(info)
+
+    def get_last_epoch(self):
+        return  self.ckpt["epoch"]
+    
+    def get_best_metric(self):
+        if not self.resume:
+            return 1e6
+        if self.ckpt["best_metric"] is not None:
+            return  self.ckpt["best_metric"]
+        else:
+            return 1e6
 
     def set_resmue(self, model_path):
         self.resume = True

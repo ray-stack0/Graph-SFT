@@ -16,6 +16,8 @@ from loader import Loader
 from utils.logger import Logger
 from utils.utils import AverageMeterForDict
 from utils.utils import save_ckpt, set_seed
+import swanlab
+import yaml
 
 
 def parse_arguments() -> Any:
@@ -62,10 +64,31 @@ def main():
     logger.log_basics(args=args, datetime=date_str)
 
     loader = Loader(args, device, is_ddp=False)
+    epoch_now = 0
     if args.resume:
         logger.print('[Resume] Loading state_dict from {}'.format(args.model_path))
         loader.set_resmue(args.model_path)
+        epoch_now = loader.get_last_epoch() + 1
     (train_set, val_set), net, loss_fn, optimizer, evaluator = loader.load()
+
+        #* 启动swanlab
+    if args.logger_writer:
+
+        adv_cfg = loader.adv_cfg.get_all_dict()
+        args_dict = vars(args)
+        merged_dict = {
+            "args": args_dict,
+            "adv_cfg": adv_cfg}
+        cfg_path = os.path.join(log_dir, 'config.yaml')
+
+        with open(cfg_path, 'w') as file:
+            yaml.dump(merged_dict, file, default_flow_style=False)
+        swanlab.init(
+        project="test-project",
+        config=merged_dict,
+        mode='cloud',
+        experiment_name='Modequery+Diff MHA',
+        description='采用diff mha加上两阶段的mode query解码')
 
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
@@ -82,8 +105,8 @@ def main():
                         drop_last=True,
                         pin_memory=True)
 
-    niter = 0
-    best_metric = 1e6
+
+    best_metric = loader.get_best_metric()
     rank_metric = args.rank_metric
     net_name = loader.network_name()
 
@@ -111,8 +134,6 @@ def main():
 
             train_loss_meter.update(loss_out)
             train_eval_meter.update(eval_out)
-            niter += args.train_batch_size
-            logger.add_dict(loss_out, niter, prefix='train/')
 
         # print('epoch: {}, lr: {}'.format(epoch, lr))
         optimizer.step_scheduler()
@@ -127,6 +148,10 @@ def main():
         logger.add_scalar('train/max_mem', max_memory, it=epoch)
         for key, elem in train_eval_meter.metrics.items():
             logger.add_scalar(title='train/{}'.format(key), value=elem.avg, it=epoch)
+
+        if args.logger_writer:
+            swanlab.log({"train/loss/": train_loss_meter.get_avg_dict()}, step=epoch)
+            swanlab.log({"train/metric/": train_eval_meter.get_avg_dict()}, step=epoch)
 
         if ((epoch + 1) % args.val_interval == 0) or epoch > int(args.train_epoches / 2):
             # * Validation
@@ -155,6 +180,10 @@ def main():
                 for key, elem in val_eval_meter.metrics.items():
                     logger.add_scalar(title='val/{}'.format(key), value=elem.avg, it=epoch)
 
+                if args.logger_writer:
+                        swanlab.log({"val/metric/": val_eval_meter.get_avg_dict()}, step=epoch)
+                        swanlab.log({"val/loss/": val_loss_meter.get_avg_dict()}, step=epoch)
+                
                 if (epoch >= args.train_epoches / 2):
                     if val_eval_meter.metrics[rank_metric].avg < best_metric:
                         model_name = date_str + '_{}_best.tar'.format(net_name)

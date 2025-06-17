@@ -18,8 +18,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from loader import Loader
 from utils.logger import Logger
 from utils.utils import AverageMeterForDict
-from utils.utils import save_ckpt, set_seed, str2bool, distributed_mean
-
+from utils.utils import save_ckpt, set_seed, distributed_mean
+import yaml
+import swanlab
 
 def parse_arguments() -> Any:
     """Arguments for running the baseline.
@@ -63,22 +64,45 @@ def main():
 
     date_str = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_dir = "log/" + date_str
+    save_dir = os.path.join("saved_models",date_str)
     logger = Logger(date_str=date_str, enable=is_main, log_dir=log_dir,
                     enable_flags={'writer': args.logger_writer, 'mailbot': False})
     logger.print(args)
     # log basic info
     logger.log_basics(args=args, datetime=date_str)
-
+    
+    epoch_now = 0
     loader = Loader(args, device, is_ddp=True, world_size=world_size, local_rank=local_rank, verbose=is_main)
     if args.resume:
         logger.print('[Resume] Loading state_dict from {}'.format(args.model_path))
         loader.set_resmue(args.model_path)
+        epoch_now = loader.get_last_epoch() + 1
     (train_set, val_set), net, loss_fn, optimizer, evaluator = loader.load()
 
+    #* 启动swanlab
+    if is_main and args.logger_writer:
+
+        adv_cfg = loader.adv_cfg.get_all_dict()
+        args_dict = vars(args)
+        merged_dict = {
+            "args": args_dict,
+            "adv_cfg": adv_cfg}
+        cfg_path = os.path.join(log_dir, 'config.yaml')
+
+        with open(cfg_path, 'w') as file:
+            yaml.dump(merged_dict, file, default_flow_style=False)
+        swanlab.init(
+        project="test-project",
+        config=merged_dict,
+        mode='cloud',
+        experiment_name='Modequery+Diff MHA',
+        description='采用diff mha加上两阶段的mode query解码')
+    
+    #* dataloader
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
-                          num_workers=48,
+                          num_workers=8,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           sampler=train_sampler,
@@ -87,18 +111,17 @@ def main():
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_set)
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
-                        num_workers=48,
+                        num_workers=8,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         sampler=val_sampler,
                         pin_memory=True)
 
-    niter = 0
-    best_metric = 1e6
+    best_metric = loader.get_best_metric()
     rank_metric = args.rank_metric
     net_name = loader.network_name()
 
-    for epoch in range(args.train_epoches):
+    for epoch in range(epoch_now, args.train_epoches):
         dist.barrier()  # sync
         logger.print('\nEpoch {}'.format(epoch))
         torch.cuda.empty_cache()
@@ -124,8 +147,7 @@ def main():
 
             train_loss_meter.update(loss_out)
             train_eval_meter.update(eval_out)
-            niter += world_size * args.train_batch_size
-            logger.add_dict(loss_out, niter, prefix='train/')
+
 
         # print('epoch: {}, lr: {}'.format(epoch, lr))
         optimizer.step_scheduler()
@@ -139,6 +161,8 @@ def main():
         logger.add_scalar('train/lr', lr, it=epoch)
         logger.add_scalar('train/max_mem', max_memory, it=epoch)
         for key, elem in train_eval_meter.metrics.items():
+            logger.add_scalar(title='train/{}'.format(key), value=elem.avg, it=epoch)
+        for key, elem in train_loss_meter.metrics.items():
             logger.add_scalar(title='train/{}'.format(key), value=elem.avg, it=epoch)
 
         dist.barrier()  # sync
@@ -172,6 +196,16 @@ def main():
                 val_eval_meter.reset()
                 val_eval_meter.update(val_eval)
 
+                loss_res = [elem.avg for k, elem in val_loss_meter.metrics.items()]
+                loss_res = torch.from_numpy(np.array(loss_res)).to(device)
+                val_loss_mean = distributed_mean(loss_res)
+                val_loss = dict()
+                for i, key in enumerate(list(val_loss_meter.metrics.keys())):
+                    val_loss[key] = val_loss_mean[i].item()
+                val_loss_meter.reset()
+                val_loss_meter.update(val_loss)
+
+
                 logger.print('[Validation] Avg. loss: {:.6}, time cost: {:.3} mins'.format(
                     val_loss_meter.metrics['loss'].avg, (time.time() - val_start) / 60.0))
                 logger.print('-- ' + val_eval_meter.get_info())
@@ -182,26 +216,34 @@ def main():
                     logger.add_scalar(title='val/{}'.format(key), value=elem.avg, it=epoch)
 
                 if is_main:
+                    if args.logger_writer:
+                        swanlab.log({"val/metric/": val_eval_meter.get_avg_dict()}, step=epoch)
+                        swanlab.log({"val/loss/": val_loss_meter.get_avg_dict()}, step=epoch)
+
                     if val_eval_meter.metrics[rank_metric].avg < best_metric:
-                        model_name = date_str + '_{}_ddp_best.tar'.format(net_name)
-                        save_ckpt(net.module, optimizer, epoch, 'saved_models/', model_name)
+                        model_name = '{}_ddp_best.tar'.format(net_name)
+                        
+                        save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
                         best_metric = val_eval_meter.metrics[rank_metric].avg
                         logger.print('Save the model: {}, {}: {:.4}, epoch: {}'.format(
                             model_name, rank_metric, best_metric, epoch))
 
         if is_main:
+            if args.logger_writer:
+                swanlab.log({"train/loss/": train_loss_meter.get_avg_dict()}, step=epoch)
+                swanlab.log({"train/metric/": train_eval_meter.get_avg_dict()}, step=epoch)
             if int(100 * epoch / args.train_epoches) in [20, 40, 60, 80] or (epoch > int(args.train_epoches * 0.8)):
-                model_name = date_str + '_{}_ddp_ckpt_epoch{}.tar'.format(net_name, epoch)
-                save_ckpt(net.module, optimizer, epoch, 'saved_models/', model_name)
+                model_name = '{}_ddp_ckpt_epoch{}.tar'.format(net_name, epoch)
+                save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
                 logger.print('Save the model to {}'.format('saved_models/' + model_name))
 
     logger.print("\nTraining completed in {:.2f} mins".format((time.time() - start_time) / 60.0))
 
     if is_main:
         # save trained model
-        model_name = date_str + '_{}_ddp_epoch{}.tar'.format(net_name, args.train_epoches)
-        save_ckpt(net.module, optimizer, epoch, 'saved_models/', model_name)
-        logger.print('Save the model to {}'.format('saved_models/' + model_name))
+        model_name = '{}_ddp_epoch{}.tar'.format(net_name, args.train_epoches)
+        save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
+        logger.print('Save the model to {}'.format(save_dir + model_name))
 
     dist.destroy_process_group()
     logger.print('\nExit...\n')
