@@ -10,6 +10,8 @@ import torch
 from torch.utils.data import Dataset
 #
 from utils.utils import from_numpy
+import torch.nn.functional as F
+
 
 
 class ArgoDataset(Dataset):
@@ -31,6 +33,9 @@ class ArgoDataset(Dataset):
         self.obs_len = obs_len
         self.pred_len = pred_len
         self.seq_len = obs_len + pred_len
+
+        self.use_gnn_fusion = True
+        self.l2a_dist_th = 50
 
         if self.verbose:
             print('[Dataset] Dataset Info:')
@@ -114,10 +119,12 @@ class ArgoDataset(Dataset):
         lane_vecs = graph['lane_vecs']
 
         # ~ calc rpe
-        rpes = dict()
         scene_ctrs = torch.cat([torch.from_numpy(trajs_ctrs), torch.from_numpy(lane_ctrs)], dim=0)
         scene_vecs = torch.cat([torch.from_numpy(trajs_vecs), torch.from_numpy(lane_vecs)], dim=0)
-        rpes['scene'], rpes['scene_mask'] = self._get_rpe(scene_ctrs, scene_vecs)
+        if self.use_gnn_fusion:
+            rpes = self._get_rpe(scene_ctrs, scene_vecs, trajs_ctrs.shape[0], graph)
+        else:
+            rpes = self._get_rpe(scene_ctrs, scene_vecs)
 
         data = {}
         data['SEQ_ID'] = seq_id
@@ -159,38 +166,132 @@ class ArgoDataset(Dataset):
         sin_dang = (v1_x * v2_y - v1_y * v2_x) / (v1_norm * v2_norm + 1e-10)
         return sin_dang
 
-    def _get_rpe(self, ctrs, vecs, radius=100.0):
-        # distance encoding
-        d_pos = (ctrs.unsqueeze(0) - ctrs.unsqueeze(1)).norm(dim=-1)
-        if False:
-            mask = d_pos >= radius
-            d_pos = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
-            pos_rpe = []
-            for l_pos in range(10):
-                pos_rpe.append(torch.sin(2**l_pos * math.pi * d_pos))
-                pos_rpe.append(torch.cos(2**l_pos * math.pi * d_pos))
-            # print('pos rpe: ', [x.shape for x in pos_rpe])
-            pos_rpe = torch.stack(pos_rpe)
-            # print('pos_rpe: ', pos_rpe.shape)
+    def _get_rpe(self, ctrs, vecs, num_actor = None, lane_graph = None, radius=100.0):
+        if self.use_gnn_fusion:
+            diff = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
+            d_pos = diff.norm(dim=-1)
+            pos_rpe = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
+
+            # angle diff
+            cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
+            sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
+            cos_a2 = self._get_cos(vecs.unsqueeze(0), diff)
+            sin_a2 = self._get_sin(vecs.unsqueeze(0), diff)
+
+            rpes = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2, pos_rpe], dim=-1) # [N,N,5]
+
+            #* l2a 提取连接边
+            dist_mask = pos_rpe < (2 * self.l2a_dist_th / radius)
+            src, tgt = dist_mask.nonzero(as_tuple=True)
+            is_lane_src = src >= num_actor
+            is_lane_tgt = tgt >= num_actor
+            lane_lane_mask = ~(is_lane_src & is_lane_tgt)  # 只保留非 lane↔lane 的边
+
+            l2a_edges = torch.stack([src[lane_lane_mask], tgt[lane_lane_mask]], dim=0).to(torch.int64) # [2,num_edges]
+            l2a_rpes = rpes[l2a_edges[0],l2a_edges[1]]
+
+            #* l2l_encoder 提取车道建模时的连接边
+
+            pre_pairs = torch.as_tensor(lane_graph['pre_pairs'], dtype= torch.int64)
+            suc_pairs = torch.as_tensor(lane_graph['suc_pairs'], dtype= torch.int64)
+            left_pairs = torch.as_tensor(lane_graph['left_pairs'], dtype= torch.int64)
+            right_pairs = torch.as_tensor(lane_graph['right_pairs'], dtype= torch.int64)  # [2, num_edges]
+
+            self_loop_nodes = torch.arange(0, (ctrs.shape[0] - num_actor))
+            self_paris = torch.stack([self_loop_nodes, self_loop_nodes], dim=0)  # shape: [2, num_self_loops]
+
+            l2l_encoder_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs, self_paris], dim=1)
+            edge_type = torch.cat([
+                torch.full((pre_pairs.shape[1],), 0, dtype=torch.long),
+                torch.full((suc_pairs.shape[1],), 1, dtype=torch.long),
+                torch.full((left_pairs.shape[1],), 2, dtype=torch.long),
+                torch.full((right_pairs.shape[1],), 3, dtype=torch.long),
+                torch.full((self_paris.shape[1],), 4, dtype=torch.long),
+            ], dim=0)
+
+            l2l_encoder_rpes = self.concat_rpe_with_type_encoding_torch(rpes, l2l_encoder_edges + num_actor, edge_type) # [2, num_l2l_edges]
+
+            #* l2l fusion
+            l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs], dim=1) + num_actor
+            l2l_rpes = rpes[l2l_edges[0],l2l_edges[1]]
+
+
+            rpes_dict = dict()
+            rpes_dict['l2a_edges'] = l2a_edges  # [2,num_edges]
+            rpes_dict['l2a_rpes'] = l2a_rpes    # [num_edges, 5
+            rpes_dict['l2l_encoder_edges'] = l2l_encoder_edges
+            rpes_dict['l2l_encoder_rpes'] = l2l_encoder_rpes
+            rpes_dict['l2l_edges'] = l2l_edges
+            rpes_dict['l2l_rpes'] = l2l_rpes
+
+            return  rpes_dict
+
         else:
+            # distance encoding
+            d_pos = (ctrs.unsqueeze(0) - ctrs.unsqueeze(1)).norm(dim=-1)
+            # if False:
+            #     mask = d_pos >= radius
+            #     d_pos = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
+            #     pos_rpe = []
+            #     for l_pos in range(10):
+            #         pos_rpe.append(torch.sin(2**l_pos * math.pi * d_pos))
+            #         pos_rpe.append(torch.cos(2**l_pos * math.pi * d_pos))
+            #     # print('pos rpe: ', [x.shape for x in pos_rpe])
+            #     pos_rpe = torch.stack(pos_rpe)
+            #     # print('pos_rpe: ', pos_rpe.shape)
+            # else:
             mask = None
             d_pos = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
             pos_rpe = d_pos.unsqueeze(0)
-            # print('pos_rpe: ', pos_rpe.shape)
 
-        # angle diff
-        cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
-        sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
-        # print('cos_a1: ', cos_a1.shape, 'sin_a1: ', sin_a1.shape)
+            # angle diff
+            cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
+            sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
+            # print('cos_a1: ', cos_a1.shape, 'sin_a1: ', sin_a1.shape)
 
-        v_pos = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
-        cos_a2 = self._get_cos(vecs.unsqueeze(0), v_pos)
-        sin_a2 = self._get_sin(vecs.unsqueeze(0), v_pos)
-        # print('cos_a2: ', cos_a2.shape, 'sin_a2: ', sin_a2.shape)
+            v_pos = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
+            cos_a2 = self._get_cos(vecs.unsqueeze(0), v_pos)
+            sin_a2 = self._get_sin(vecs.unsqueeze(0), v_pos)
+            # print('cos_a2: ', cos_a2.shape, 'sin_a2: ', sin_a2.shape)
 
-        ang_rpe = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2])
-        rpe = torch.cat([ang_rpe, pos_rpe], dim=0)
-        return rpe, mask
+            ang_rpe = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2])
+            rpe = torch.cat([ang_rpe, pos_rpe], dim=0)
+            rpes_dict = dict()
+            rpes_dict['scene'] = rpe    # [5, N, N]
+            rpes_dict['scene_mask'] = mask
+            return rpes_dict
+
+    def concat_rpe_with_type_encoding_torch(self, rpe_matrix, edge_index, edge_type=None, num_edge_types=4):
+        """
+        将原始 RPE 特征与边类型的 One-Hot 编码拼接（PyTorch 版本）。
+
+        参数:
+            rpe_matrix: torch.Tensor, shape [num_nodes, num_nodes, rpe_dim]
+            edge_index: torch.Tensor, shape [2, num_edges]
+            edge_type: torch.Tensor or None, shape [num_edges], 类型编号为 0~num_edge_types-1
+
+        返回:
+            rpe_with_type: torch.Tensor, shape [num_edges, rpe_dim + num_edge_types]
+        """
+        assert edge_index.shape[0] == 2, "edge_index 应该是 shape [2, num_edges]"
+
+        row_idx, col_idx = edge_index[0], edge_index[1]  # 起点、终点索引
+
+        # 从 RPE 矩阵中取出对应边的特征: [num_edges, rpe_dim]
+        rpe = rpe_matrix[row_idx, col_idx]
+
+        # one-hot 编码
+        if edge_type is None:
+            one_hot = torch.zeros(rpe.size(0), num_edge_types, device=rpe.device, dtype=rpe.dtype)
+        else:
+            valid_mask = (edge_type >= 0) & (edge_type < num_edge_types)
+            one_hot = torch.zeros(rpe.size(0), num_edge_types, device=rpe.device, dtype=rpe.dtype)
+            one_hot[valid_mask] = F.one_hot(edge_type[valid_mask], num_classes=num_edge_types).to(rpe.dtype)
+
+        # 拼接
+        rpe_with_type = torch.cat([rpe, one_hot], dim=-1)  # shape: [num_edges, rpe_dim + num_edge_types]
+
+        return rpe_with_type
 
     def collate_fn(self, batch: List[Any]) -> Dict[str, Any]:
         batch = from_numpy(batch)
@@ -209,13 +310,51 @@ class ArgoDataset(Dataset):
         '''
 
         actors, actor_idcs = self.actor_gather(data['BATCH_SIZE'], data['TRAJS_OBS'], data['PAD_OBS'])
-        lanes, lane_idcs = self.graph_gather(data['BATCH_SIZE'], data["LANE_GRAPH"])
+        lanes, lane_idcs, nodes_of_lane, node_edge_index = self.graph_gather(data['BATCH_SIZE'], data["LANE_GRAPH"])
+        if self.use_gnn_fusion:
+            rpes = self.rpe_gather(data['RPE'], lane_idcs, actor_idcs)
+            data['RPE'] = rpes
 
         data['ACTORS'] = actors
         data['ACTOR_IDCS'] = actor_idcs
         data['LANES'] = lanes
         data['LANE_IDCS'] = lane_idcs
+        data['NODES_OF_LANES'] = nodes_of_lane
+        data['NODE_EDGES_INDEX'] = node_edge_index
         return data
+
+    def rpe_gather(self, rpes_dicts, lane_idcs, actor_idcs):
+        '''
+            rpes_dict['l2a_edges'] = l2a_edges  # [2,num_edges]
+            rpes_dict['l2a_rpes'] = l2a_rpes    # [num_edges, 5
+            rpes_dict['l2l_encoder_edges'] = l2l_encoder_edges
+            rpes_dict['l2l_encoder_rpes'] = l2l_encoder_rpes
+            rpes_dict['l2l_edges'] = l2l_edges
+            rpes_dict['l2l_rpes'] = l2l_rpes
+        '''
+        token_count = 0
+        lane_count = 0
+        for i in range(len(rpes_dicts)):
+            rpes_dicts[i]['l2a_edges'] = rpes_dicts[i]['l2a_edges'] + token_count
+            rpes_dicts[i]['l2l_edges'] = rpes_dicts[i]['l2l_edges'] + token_count
+            rpes_dicts[i]['l2l_encoder_edges'] = rpes_dicts[i]['l2l_encoder_edges'] + lane_count
+
+            token_count += (len(lane_idcs[i]) + len(actor_idcs[i]))
+            lane_count += len(lane_idcs[i])
+
+        rpes_dict = dict()
+        for key in rpes_dicts[0].keys():
+            vals = [x[key] for x in rpes_dicts if x[key].numel() > 0]
+            if len(vals) == 0:
+                continue
+            if 'rpes' in key:
+                rpes_dict[key] = torch.cat(vals, dim=0)
+            else:
+                rpes_dict[key] = torch.cat(vals, dim=1)
+
+        return rpes_dict
+
+
 
     def actor_gather(self, batch_size, actors, pad_flags):
         num_actors = [len(x) for x in actors]
@@ -254,35 +393,45 @@ class ArgoDataset(Dataset):
         '''
         lane_idcs = list()
         lane_count = 0
+        node_count = 0
         for i in range(batch_size):
             l_idcs = torch.arange(lane_count, lane_count + graphs[i]["num_lanes"])
             lane_idcs.append(l_idcs)
+
+            for key in ["pre", "suc"]:
+                graphs[i][key] = graphs[i][key].type(torch.int32) + torch.tensor(node_count, dtype=torch.int32)
+            graphs[i]["nodes_of_lane"] = graphs[i]["nodes_of_lane"] + lane_count
+
             lane_count = lane_count + graphs[i]["num_lanes"]
+            node_count = node_count + graphs[i]["num_nodes"]
         # print('lane_idcs: ', lane_idcs)
 
         graph = dict()
-        for key in ["node_ctrs", "node_vecs", "turn", "control", "intersect", "left", "right"]:
+        for key in ["node_ctrs", "node_vecs", "turn", "control", "intersect", "left", "right", "nodes_of_lane"]:
             graph[key] = torch.cat([x[key] for x in graphs], 0)
             # print(key, graph[key].shape)
-        for key in ["lane_ctrs", "lane_vecs"]:
-            graph[key] = [x[key] for x in graphs]
+        # for key in ["lane_ctrs", "lane_vecs"]:
+        #     graph[key] = [x[key] for x in graphs]
             # print(key, [x.shape for x in graph[key]])
+        graph['node_edge_index'] = dict()
+        for key in ["pre", "suc"]:
+            graph['node_edge_index'][key] = torch.cat([x[key] for x in graphs], 1)
 
         lanes = torch.cat([graph['node_ctrs'],
                            graph['node_vecs'],
                            graph['turn'],
-                           graph['control'].unsqueeze(2),
-                           graph['intersect'].unsqueeze(2),
-                           graph['left'].unsqueeze(2),
-                           graph['right'].unsqueeze(2)], dim=-1)  # [N_{lane}, 10, F]
+                           graph['control'].unsqueeze(1),
+                           graph['intersect'].unsqueeze(1),
+                           graph['left'].unsqueeze(1),
+                           graph['right'].unsqueeze(1)], dim=-1) # [N_{nodes}, F]
 
-        return lanes, lane_idcs
+        return lanes, lane_idcs, graph['nodes_of_lane'], graph['node_edge_index']
 
-    def rpe_gather(self, rpes):
-        rpe = dict()
-        for key in list(rpes[0].keys()):
-            rpe[key] = [x[key] for x in rpes]
-        return rpe
+    # def rpe_gather(self, rpes):
+    #     rpe = dict()
+    #     for key in list(rpes[0].keys()):
+    #         rpe[key] = [x[key] for x in rpes]
+    #     return rpe
 
     def data_augmentation(self, df):
         '''
