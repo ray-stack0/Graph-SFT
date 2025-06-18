@@ -131,7 +131,7 @@ class Loader:
         if self.is_ddp:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(self.device)  # SyncBN
             model = model.to(self.device)
-            model = DDP(model, device_ids=[self.local_rank], output_device=self.local_rank)
+            model = DDP(model, device_ids=[self.local_rank], output_device=self.local_rank, find_unused_parameters=True)
         else:
             model = model.to(self.device)
 

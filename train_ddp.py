@@ -92,11 +92,11 @@ def main():
         with open(cfg_path, 'w') as file:
             yaml.dump(merged_dict, file, default_flow_style=False)
         swanlab.init(
-        project="test-project",
+        project="SIMPL-Baseline",
         config=merged_dict,
         mode='cloud',
-        experiment_name='Modequery+Diff MHA',
-        description='采用diff mha加上两阶段的mode query解码')
+        experiment_name='Point-RPE-GAT-MapEncoder + RPEGAT-GCNv2-Fusion',
+        description='采用PointNet得到lane feature,再使用EdgeRPE+GAT对连接关系进行建模,然后使用GAT形式的SFT交互(无L2L),再将交通流信息沿着连接关系进行传播.')
     
     #* dataloader
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
@@ -241,6 +241,7 @@ def main():
 
     if is_main:
         # save trained model
+        swanlab.finish()
         model_name = '{}_ddp_epoch{}.tar'.format(net_name, args.train_epoches)
         save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
         logger.print('Save the model to {}'.format(save_dir + model_name))

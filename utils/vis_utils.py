@@ -12,9 +12,9 @@ from pathlib import Path
 
 from argoverse.map_representation.map_api import ArgoverseMap
 #
-from av2.map.map_api import ArgoverseStaticMap
-from av2.map.lane_segment import LaneType, LaneMarkType
-from av2.datasets.motion_forecasting.data_schema import ArgoverseScenario, ObjectState, ObjectType, Track, TrackCategory
+# from av2.map.map_api import ArgoverseStaticMap
+# from av2.map.lane_segment import LaneType, LaneMarkType
+# from av2.datasets.motion_forecasting.data_schema import ArgoverseScenario, ObjectState, ObjectType, Track, TrackCategory
 
 
 class ArgoMapVisualizer:

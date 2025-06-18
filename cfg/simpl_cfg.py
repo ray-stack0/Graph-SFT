@@ -31,7 +31,7 @@ class AdvCfg():
         self.net_cfg["n_scene_layer"] = 4
         self.net_cfg["n_scene_head"] = 8
         self.net_cfg['use_diff_mha'] = False
-        self.net_cfg["dropout"] = 0.1
+        self.net_cfg["dropout"] = 0.3
         self.net_cfg["update_edge"] = True
 
         self.net_cfg["param_out"] = 'none'  # bezier/monomial/none
