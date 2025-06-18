@@ -315,7 +315,7 @@ class EdgeAwareGATLayer(MessagePassing):
         attn_logits = (q * k).sum(dim=-1) / (self.d_head ** 0.5)  # [E, H]
 
         # local softmax per target node
-        attn = pyg_softmax(attn_logits, index=edge_index[1], dim=0)  # [E, H]
+        attn = pyg_softmax(attn_logits, index=edge_index[1])  # [E, H]
 
         # weighted message
         out = attn.unsqueeze(-1) * v  # [E, H, d_h]
@@ -607,7 +607,6 @@ class EdgeAwareGATLayerWithDiffAttn(MessagePassing):
         attn = attn1 - attn2 * lambda_exp  # [E, H]
         attn = self.dropout(attn).unsqueeze(-1)  # [E, H, 1]
 
-        v = v.view(-1, self.heads, 2 * self.d_head)  # [E, H, 2*d_h]
         out = attn * v  # [E, H, 2*d_h]
 
         # 归一化 + reshape回d_model维度
@@ -637,7 +636,7 @@ class EdgeAwareGATFusion(nn.Module):
                 EdgeAwareGATLayerWithDiffAttn(d_model=d_model,
                                               d_edge=d_model,
                                               d_ffn=2 * d_model,
-                                              heads=num_heads,
+                                              heads=num_heads/2,
                                               dropout=dropout,
                                               depth=i)
                 for i in range(num_layers)
