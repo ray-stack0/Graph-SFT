@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from torch.nn import MultiheadAttention
 
 from torch_geometric.utils import softmax as pyg_softmax
-from torch_geometric.nn import MessagePassing, GCN2Conv
+from torch_geometric.nn import MessagePassing, GCN2Conv, NNConv
 from torch_scatter import scatter_softmax, scatter_add, scatter_max
 from utils.utils import gpu, init_weights, to_long
 
@@ -496,8 +496,8 @@ class EdgeAwareGATLayerWithDiffAttn(MessagePassing):
         super().__init__(aggr='add')  # 聚合方式为求和
         self.d_model = d_model
         self.d_edge = d_edge
-        self.heads = heads
-        self.d_head = d_model // heads // 2  # 每个差分注意力头一半维度
+        self.heads = int(heads)
+        self.d_head = int(d_model // self.heads // 2)  # 每个差分注意力头一半维度
         self.dropout = nn.Dropout(dropout)
         self.update_edge = update_edge
 
@@ -520,7 +520,7 @@ class EdgeAwareGATLayerWithDiffAttn(MessagePassing):
         self.lambda_k1 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_q2 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_k2 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.subln = nn.LayerNorm(2 * self.d_head * heads)
+        self.subln = nn.LayerNorm(2 * self.d_head * self.heads)
 
         # 边特征更新模块
         if update_edge:
@@ -610,7 +610,7 @@ class EdgeAwareGATLayerWithDiffAttn(MessagePassing):
         out = attn * v  # [E, H, 2*d_h]
 
         # 归一化 + reshape回d_model维度
-        out = self.subln(out.reshape(-1, self.d_model))
+        out = out.reshape(-1, self.d_model)
 
         # 最后线性变换
         return self.out_proj(out)
@@ -630,13 +630,14 @@ class EdgeAwareGATFusion(nn.Module):
         dropout = cfg['dropout']
         self.num_layers = cfg['n_scene_layer']
         self.layernorm = nn.LayerNorm(d_model)
+        self.use_nnconv = cfg['use_nnconv']
 
         if cfg['use_diff_mha']:
             self.l2a2l = nn.ModuleList(
                 EdgeAwareGATLayerWithDiffAttn(d_model=d_model,
                                               d_edge=d_model,
                                               d_ffn=2 * d_model,
-                                              heads=num_heads/2,
+                                              heads=int(num_heads/2),
                                               dropout=dropout,
                                               depth=i)
                 for i in range(num_layers)
@@ -655,21 +656,44 @@ class EdgeAwareGATFusion(nn.Module):
             nn.LayerNorm(d_model),
             nn.ReLU(inplace=True)
         )
-        self.lanegcn2 = nn.ModuleList(
-            GCN2Conv(
-                channels=d_model,
-                alpha=0.1,
-                theta=0.5,
-                shared_weights=False,
-                layer=i + 1
+
+        if self.use_nnconv:
+            self.shared_edge_mlp = nn.Sequential(
+                nn.Linear(cfg["d_rpe_in_l2l"], d_model * d_model),
+                nn.LayerNorm(d_model * d_model),
+                nn.ReLU(inplace=True)
             )
-            for i in range(num_layers)
-        )
+            self.l2l = nn.ModuleList(
+                NNConv(d_model, d_model, 
+                       nn=self.shared_edge_mlp, 
+                       aggr='add')
+                for _ in range(num_layers)
+                )
+        else:
+            self.l2l = nn.ModuleList(
+                    GCN2Conv(
+                        channels=d_model,
+                        alpha=0.1,
+                        theta=0.5,
+                        shared_weights=False,
+                        layer=i + 1
+                    )
+                    for i in range(num_layers)
+                )
+            
+    
+    def l2l_forward(self, layer, x, x_init, edge_index, edge_attr):
+        if self.use_nnconv:
+            return layer(x, edge_index, edge_attr)
+        else:
+            return layer(x, x_init, edge_index)
+
 
     def forward(self, actors, actor_idcs, lanes, lane_idcs, rpes):
         l2a_edge = rpes['l2a_edges']
         l2a_attr = rpes['l2a_rpes']
-        l2l_scene = rpes['l2l_edges']
+        l2l_edge = rpes['l2l_edges']
+        l2l_attr = rpes['l2l_rpes']
         token_list = []
         lane_global_ids = []
         offset = 0  # 当前拼接 token 的起始位置
@@ -695,7 +719,8 @@ class EdgeAwareGATFusion(nn.Module):
 
         for i in range(self.num_layers):
             token, l2a_attr = self.l2a2l[i](token, l2a_edge, l2a_attr)
-            lane_updated = self.layernorm(self.lanegcn2[i](token, token_init, l2l_scene)[lane_global_ids])
+            lane_feats = self.l2l_forward(self.l2l[i], token, token_init, l2l_edge, l2l_attr)
+            lane_updated = self.layernorm(lane_feats[lane_global_ids])
             token = token.clone()
             token[lane_global_ids] = lane_updated
 
@@ -922,6 +947,198 @@ class FusionNet(nn.Module):
         # print('lanes: ', lanes.shape)
         return actors, lanes
 
+#* 4. Decoder
+
+
+class ModeSeqDecoderTwoStage(nn.Module):
+    def __init__(self, device, cfg):
+        super().__init__()
+        self.device = device
+        self.two_stage = cfg["two_stage"]
+        hidden_dim = cfg['d_embed']
+        num_modes = cfg['g_num_modes']
+        pred_len = cfg['g_pred_len']
+        num_layers = cfg['n_decoder_layer']
+        num_heads = cfg['n_decoder_head']
+        dropout = cfg['dropout']
+        cross_first = cfg['cross_first']
+
+        if self.two_stage:
+            # learnable 模态 token
+            self.mode_queries = nn.Parameter(torch.randn(num_modes, 1, hidden_dim))
+
+            # transformer 层对 mode_query 与 agent_feat 做交互
+            self.layers = nn.ModuleList([
+                ModeSeqLayer(hidden_dim, num_heads, dropout, cross_first) for _ in range(num_layers)
+            ])
+            # 阶段一：goal 解码器
+            self.goal_head = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 2)  # 输出 goal [x, y]
+            )
+
+            self.goal_offset = nn.Sequential(
+                nn.Linear(hidden_dim+2, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 2)  # 输出 goal [x, y]
+            )
+
+            # 阶段二：trajectory 解码器（输入是 goal + agent_feat）
+            self.traj_mlp = nn.Sequential(
+                nn.Linear(hidden_dim + 2, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 2 * (pred_len-1))
+            )
+
+            # 模态置信度预测
+            self.conf_head = nn.Sequential(
+                nn.Linear(hidden_dim + 2, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim // 2, 1)
+            )
+        else:
+            dim_mm = hidden_dim * num_modes
+            dim_inter = dim_mm // 2
+            self.multihead_proj = nn.Sequential(
+                nn.Linear(hidden_dim, dim_inter),
+                nn.LayerNorm(dim_inter),
+                nn.ReLU(inplace=True),
+                nn.Linear(dim_inter, dim_mm),
+                nn.LayerNorm(dim_mm),
+                nn.ReLU(inplace=True)
+            )
+            self.traj_mlp = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 2 * pred_len)
+            )
+
+            # 模态置信度预测
+            self.conf_head = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim // 2, 1)
+            )
+
+
+    def forward(self, agent_feats, actor_idcs):
+        """
+        agent_feats: [N_a, D]
+        actor_idcs: 每个 batch 场景中的 agent id 索引
+        return: list of [N_i, K, T, 2], list of [N_i, K]
+        """
+        
+        if self.two_stage:
+            B = agent_feats.size(0)
+            # 跨模态 attention 融合 agent features
+            mode_queries = self.mode_queries.repeat(1, B, 1)  # [K, N_a, D]
+            for layer in self.layers:
+                mode_queries = layer(mode_queries, agent_feats)  # 每个模态 query 都 attend agent_feats
+            # 预测每个模态的终点 goal
+            goal = self.goal_head(mode_queries)  # [K, N_a, 2]
+            offset = self.goal_offset(torch.cat([mode_queries, goal.detach()], dim=-1))
+            goal = goal + offset
+
+            # 拼接 goal 和 mode embedding 做轨迹预测
+            goal_detached = goal.detach()  
+            mode_cat = torch.cat([mode_queries, goal_detached], dim=-1)  # [K, N_a, D+2]
+            traj = self.traj_mlp(mode_cat).view(mode_cat.size(0), mode_cat.size(1), -1, 2)  # [K, N_a, (T-1), 2]
+            traj = torch.cat([traj, goal.unsqueeze(2)],dim=2)
+
+            # 模态置信度
+            conf = self.conf_head(mode_cat).squeeze(-1)  # [K, N_a]
+
+
+        else:
+            embed = self.multihead_proj(agent_feats).view(-1, self.num_modes, self.hidden_size).permute(1, 0, 2)
+            traj = self.traj_mlp(embed).view(embed.shape[0],embed.shape[1],-1,2) # [K, N_a, T, 2]
+            conf = self.conf_head(embed).squeeze(-1)  # [K, N_a]
+
+        # 转置 → [N_a, K, T, 2], [N_a, K]
+        traj = traj.transpose(0, 1)
+        conf = conf.transpose(0, 1)
+        conf = F.softmax(conf * 1.0, dim=1)
+        res_traj, res_conf = [], []
+        for i in range(len(actor_idcs)):
+            idcs = actor_idcs[i]
+            res_conf.append(conf[idcs])
+            res_traj.append(traj[idcs])
+        return res_conf, res_traj
+
+
+
+class ModeSeqLayer(nn.Module):
+    def __init__(self, hidden_dim, num_heads, dropout=0.1, cross_first=False):
+        """
+        cross_first: 若为 True，则先做 cross-attn，再 self-attn
+                     若为 False（默认），则先做 self-attn，再 cross-attn（与你原始的一致）
+        """
+        super().__init__()
+        self.cross_first = cross_first
+
+        self.mem_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=False
+        )
+
+        self.ctx_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=False
+        )
+
+        self.dropout = nn.Dropout(dropout)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, 2 * hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * hidden_dim, hidden_dim)
+        )
+
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.norm3 = nn.LayerNorm(hidden_dim)
+
+    def forward(self, x, agent_feats):
+        """
+        x: [K, N, D] - mode queries
+        agent_feats: [N, D] - agent-level features
+        """
+        # 准备 agent_feats: [K, N, D]
+        agent_feats = agent_feats.unsqueeze(0).repeat(x.size(0), 1, 1)
+
+        if self.cross_first:
+            # ==== 先做 cross-attn ====
+            ctx_out, _ = self.ctx_attn(query=x, key=agent_feats, value=agent_feats)
+            x = self.norm1(x + self.dropout(ctx_out))
+
+            # 再做 self-attn
+            attn_out, _ = self.mem_attn(query=x, key=x, value=x)
+            x = self.norm2(x + self.dropout(attn_out))
+        else:
+            # ==== 先做 self-attn（原始方式）====
+            attn_out, _ = self.mem_attn(query=x, key=x, value=x)
+            x = self.norm1(x + self.dropout(attn_out))
+
+            # 再做 cross-attn
+            ctx_out, _ = self.ctx_attn(query=x, key=agent_feats, value=agent_feats)
+            x = self.norm2(x + self.dropout(ctx_out))
+
+        # FFN 层
+        x = self.norm3(x + self.ffn(x))
+        return x
+
 
 class MLPDecoder(nn.Module):
     def __init__(self,
@@ -1093,8 +1310,11 @@ class Simpl(nn.Module):
         #                             config=cfg)
         self.fusion_net = EdgeAwareGATFusion(device, cfg)
 
-        self.pred_net = MLPDecoder(device=self.device,
+        if cfg["use_mlp_decoder"]:
+            self.pred_net = MLPDecoder(device=self.device,
                                    config=cfg)
+        else:
+            self.pred_net = ModeSeqDecoderTwoStage(device, cfg)
 
         if cfg["init_weights"]:
             self.apply(init_weights)

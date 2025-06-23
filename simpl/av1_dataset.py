@@ -213,7 +213,13 @@ class ArgoDataset(Dataset):
 
             #* l2l fusion
             l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs], dim=1) + num_actor
-            l2l_rpes = rpes[l2l_edges[0],l2l_edges[1]]
+            edge_type = torch.cat([
+                torch.full((pre_pairs.shape[1],), 0, dtype=torch.long),
+                torch.full((suc_pairs.shape[1],), 1, dtype=torch.long),
+                torch.full((left_pairs.shape[1],), 2, dtype=torch.long),
+                torch.full((right_pairs.shape[1],), 3, dtype=torch.long)
+            ], dim=0)
+            l2l_rpes = self.concat_rpe_with_type_encoding_torch(rpes, l2l_edges, edge_type)
 
 
             rpes_dict = dict()

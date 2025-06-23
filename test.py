@@ -78,12 +78,12 @@ def main():
     loader = Loader(args, device, is_ddp=False)
     print('[Resume] Loading state_dict from {}'.format(args.model_path))
     loader.set_resmue(args.model_path)
-    test_set, net, loss_fn, _, evaluator,_ = loader.load()
+    test_set, net, loss_fn, _, evaluator = loader.load()
 
     dl_val = DataLoader(test_set,
                         batch_size=args.val_batch_size,
                         shuffle=False,
-                        num_workers=4,
+                        num_workers=8,
                         collate_fn=test_set.collate_fn,
                         drop_last=False,
                         pin_memory=True)
@@ -116,9 +116,10 @@ def main():
         
     from argoverse.evaluation.competition_util import generate_forecasting_h5
     file_path = 'results'
-    filename = os.path.basename(args.model_path) 
-    name_without_ext = filename.rsplit('.', 1)[0]
-    abs_path = os.path.join(file_path,name_without_ext)
+    folder_name = os.path.basename(os.path.dirname(args.model_path))  # '20250618-083330'
+    file_stem = os.path.splitext(os.path.basename(args.model_path))[0]  # 'Simpl_ddp_best'
+    abs_path = os.path.join(file_path,folder_name, file_stem)
+    
     generate_forecasting_h5(preds, abs_path, probabilities=probabilities)
     print('\nExit...')
 

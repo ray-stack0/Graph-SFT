@@ -44,6 +44,7 @@ def parse_arguments() -> Any:
     parser.add_argument("--resume", action="store_true", help="Resume training")
     parser.add_argument("--no_pbar", action="store_true", help="Hide progress bar")
     parser.add_argument("--model_path", required=False, type=str, help="path to the saved model")
+    parser.add_argument("--experiment_name", required=False, type=str, default="test")
     return parser.parse_args()
 
 
@@ -72,7 +73,7 @@ def main():
     logger.log_basics(args=args, datetime=date_str)
     
     epoch_now = 0
-    loader = Loader(args, device, is_ddp=True, world_size=world_size, local_rank=local_rank, verbose=is_main)
+    loader = Loader(args, device, is_ddp=True, world_size=world_size, local_rank=local_rank, verbose=is_main, logger=logger)
     if args.resume:
         logger.print('[Resume] Loading state_dict from {}'.format(args.model_path))
         loader.set_resmue(args.model_path)
@@ -95,8 +96,7 @@ def main():
         project="SIMPL-Baseline",
         config=merged_dict,
         mode='cloud',
-        experiment_name='Point-RPE-GAT-MapEncoder + RPEGAT-GCNv2-Fusion',
-        description='采用PointNet得到lane feature,再使用EdgeRPE+GAT对连接关系进行建模,然后使用GAT形式的SFT交互(无L2L),再将交通流信息沿着连接关系进行传播.')
+        experiment_name=args.experiment_name)
     
     #* dataloader
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
