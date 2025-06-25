@@ -963,14 +963,14 @@ class ModeSeqDecoderTwoStage(nn.Module):
         dropout = cfg['dropout']
         cross_first = cfg['cross_first']
 
-        if self.two_stage:
-            # learnable 模态 token
-            self.mode_queries = nn.Parameter(torch.randn(num_modes, 1, hidden_dim))
+        # learnable 模态 token
+        self.mode_queries = nn.Parameter(torch.randn(num_modes, 1, hidden_dim))
 
-            # transformer 层对 mode_query 与 agent_feat 做交互
-            self.layers = nn.ModuleList([
-                ModeSeqLayer(hidden_dim, num_heads, dropout, cross_first) for _ in range(num_layers)
-            ])
+        # transformer 层对 mode_query 与 agent_feat 做交互
+        self.layers = nn.ModuleList([
+            ModeSeqLayer(hidden_dim, num_heads, dropout, cross_first) for _ in range(num_layers)
+        ])
+        if self.two_stage:
             # 阶段一：goal 解码器
             self.goal_head = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
@@ -1002,16 +1002,6 @@ class ModeSeqDecoderTwoStage(nn.Module):
                 nn.Linear(hidden_dim // 2, 1)
             )
         else:
-            dim_mm = hidden_dim * num_modes
-            dim_inter = dim_mm // 2
-            self.multihead_proj = nn.Sequential(
-                nn.Linear(hidden_dim, dim_inter),
-                nn.LayerNorm(dim_inter),
-                nn.ReLU(inplace=True),
-                nn.Linear(dim_inter, dim_mm),
-                nn.LayerNorm(dim_mm),
-                nn.ReLU(inplace=True)
-            )
             self.traj_mlp = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU(),
@@ -1034,13 +1024,13 @@ class ModeSeqDecoderTwoStage(nn.Module):
         actor_idcs: 每个 batch 场景中的 agent id 索引
         return: list of [N_i, K, T, 2], list of [N_i, K]
         """
-        
+        B = agent_feats.size(0)
+        # 跨模态 attention 融合 agent features
+        mode_queries = self.mode_queries.repeat(1, B, 1)  # [K, N_a, D]
+        for layer in self.layers:
+            mode_queries = layer(mode_queries, agent_feats)  # 每个模态 query 都 attend agent_feats
+
         if self.two_stage:
-            B = agent_feats.size(0)
-            # 跨模态 attention 融合 agent features
-            mode_queries = self.mode_queries.repeat(1, B, 1)  # [K, N_a, D]
-            for layer in self.layers:
-                mode_queries = layer(mode_queries, agent_feats)  # 每个模态 query 都 attend agent_feats
             # 预测每个模态的终点 goal
             goal = self.goal_head(mode_queries)  # [K, N_a, 2]
             offset = self.goal_offset(torch.cat([mode_queries, goal.detach()], dim=-1))
@@ -1057,9 +1047,8 @@ class ModeSeqDecoderTwoStage(nn.Module):
 
 
         else:
-            embed = self.multihead_proj(agent_feats).view(-1, self.num_modes, self.hidden_size).permute(1, 0, 2)
-            traj = self.traj_mlp(embed).view(embed.shape[0],embed.shape[1],-1,2) # [K, N_a, T, 2]
-            conf = self.conf_head(embed).squeeze(-1)  # [K, N_a]
+            traj = self.traj_mlp(mode_queries).view(mode_queries.shape[0],mode_queries.shape[1],-1,2) # [K, N_a, T, 2]
+            conf = self.conf_head(mode_queries).squeeze(-1)  # [K, N_a]
 
         # 转置 → [N_a, K, T, 2], [N_a, K]
         traj = traj.transpose(0, 1)

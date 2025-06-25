@@ -444,10 +444,12 @@ class ArgoDataset(Dataset):
             "SEQ_ID", "CITY_NAME", "ORIG", "ROT",
             "TIMESTAMP", "TRAJS", "TRAJS_CTRS", "TRAJS_VECS", "PAD_FLAGS", "LANE_GRAPH"
 
+            "LANE_GRAPH"包含以下
             "node_ctrs", "node_vecs",
             "turn", "control", "intersect", "left", "right"
             "lane_ctrs", "lane_vecs"
-            "num_nodes", "num_lanes", "node_idcs", "lane_idcs"
+            "num_nodes", "num_lanes", "nodes_of_lane", "pre", "suc", "pre_pairs", "suc_pairs"
+            "left_pairs", "right_pairs"
         '''
 
         data = {}
@@ -467,6 +469,9 @@ class ArgoDataset(Dataset):
         data['LANE_GRAPH']['lane_vecs'][..., 1] *= -1
         data['LANE_GRAPH']['node_ctrs'][..., 1] *= -1
         data['LANE_GRAPH']['node_vecs'][..., 1] *= -1
-        data['LANE_GRAPH']['left'], data['LANE_GRAPH']['right'] = data['LANE_GRAPH']['right'], data['LANE_GRAPH']['left']
+        data['LANE_GRAPH']['left'], data['LANE_GRAPH']['right'] = data['LANE_GRAPH']['right'].copy(), data['LANE_GRAPH']['left'].copy()
+        data['LANE_GRAPH']['left_pairs'], data['LANE_GRAPH']['right_pairs'] = data['LANE_GRAPH']['right_pairs'].copy(), data['LANE_GRAPH']['left_pairs'].copy()
+        data['LANE_GRAPH']['turn'][..., [0, 1]] = data['LANE_GRAPH']['turn'][..., [1, 0]]
+
 
         return data

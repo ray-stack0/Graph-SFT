@@ -24,8 +24,44 @@ class LossFunc(nn.Module):
         loss_out = self.pred_loss(out,
                                   gpu(data["TRAJS_FUT"], self.device),
                                   to_long(gpu(data["PAD_FUT"], self.device)))
-        loss_out["loss"] = loss_out["cls_loss"] + loss_out["reg_loss"]
+        loss_out["loss"] = sum([x for x in loss_out.values()])
         return loss_out
+
+    def compute_diversity_loss_euclidean(
+    reg: torch.Tensor,           # [N, K, T, 2]
+    min_dist: torch.Tensor,      # [N]
+    threshold: float = 2.0,
+    temperature: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        多样性损失函数，基于欧几里得距离。reg 是轨迹序列 (x, y)，单位为 meter。
+        """
+        device = reg.device
+        N, K, T, _ = reg.shape
+        div_weights = torch.clamp((threshold - min_dist) / threshold, min=0.0, max=1.0)  # [N]
+        valid_mask = div_weights > 0
+        if valid_mask.sum() == 0:
+            return torch.tensor(0.0, device=device)
+
+        reg_valid = reg[valid_mask]          # [N', K, T, 2]
+        weights_valid = div_weights[valid_mask]  # [N']
+        N_valid = reg_valid.shape[0]
+        reg_flat = reg_valid.view(N_valid, K, -1)  # [N', K, T*2]
+
+        # pairwise distances
+        diff = reg_flat.unsqueeze(2) - reg_flat.unsqueeze(1)     # [N', K, K, T*2]
+        dist_matrix = torch.norm(diff, dim=-1)                   # [N', K, K]
+        dist_matrix = dist_matrix / temperature                  # 调整梯度 scale
+
+        # 去除对角线
+        eye = torch.eye(K, device=device).unsqueeze(0)
+        dist_matrix = dist_matrix * (1 - eye)
+
+        diversity = dist_matrix.sum(dim=(1, 2)) / (K * (K - 1))  # [N']
+        loss = (-weights_valid * diversity).sum() / (weights_valid.sum() + 1e-6)
+        return loss
+
+
 
     def pred_loss(self, out: Dict[str, List[torch.Tensor]], gt_preds: List[torch.Tensor], pad_flags: List[torch.Tensor]):
         cls = out[0]

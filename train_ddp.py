@@ -102,7 +102,9 @@ def main():
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
-                          num_workers=8,
+                          num_workers=14,
+                          persistent_workers=True,
+                          prefetch_factor=4,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           sampler=train_sampler,
@@ -111,7 +113,9 @@ def main():
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_set)
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
-                        num_workers=8,
+                        num_workers=16,
+                        persistent_workers=True,
+                        prefetch_factor=4,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         sampler=val_sampler,
@@ -166,7 +170,7 @@ def main():
             logger.add_scalar(title='train/{}'.format(key), value=elem.avg, it=epoch)
 
         dist.barrier()  # sync
-        if ((epoch + 1) % args.val_interval == 0) or epoch > int(args.train_epoches / 2):
+        if ((epoch + 1) % args.val_interval == 0) or epoch > 25:
             # * Validation
             with torch.no_grad():
                 val_start = time.time()

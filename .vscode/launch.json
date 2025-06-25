@@ -1,0 +1,29 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: TorchRun",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "torch.distributed.run",
+            "args": [
+                "--nnodes", "1",
+                "--nproc_per_node", "4",
+                "train_ddp.py",
+                "--features_dir","data_argo/features/",
+                "--data_aug",
+                "--train_batch_size","32",
+                "--val_batch_size","32",
+                "--val_interval","2",
+                "--train_epoches","60",
+                "--use_cuda",
+                "--adv_cfg_path","cfg.simpl_cfg"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
