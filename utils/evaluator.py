@@ -3,6 +3,7 @@ import os
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 from argoverse.evaluation.eval_forecasting import get_displacement_errors_and_miss_rate
 
 
@@ -15,7 +16,7 @@ class TrajPredictionEvaluator():
 
     def evaluate(self, post_out, data):
         traj_pred = post_out['traj_pred']
-        prob_pred = post_out['prob_pred']
+        prob_pred = F.softmax(post_out['prob_pred'], dim=1)
         # traj_pred:    batch x n_mod x pred_len x 2
         # prob_pred:    batch x n_mod
 

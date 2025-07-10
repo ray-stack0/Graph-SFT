@@ -30,7 +30,8 @@ class ArgoPreprocAV2():
 
         self.FAR_DIST_THRES = 20.0
 
-        self.SEG_LENGTH = 1.5  # 采样的距离
+        self.SEG_LENGTH = 15.0  # approximated lane segment length
+        self.SEG_N_NODE = 10
 
         if self.debug:
             # self.map_vis = ArgoMapVisualizer()
@@ -130,25 +131,25 @@ class ArgoPreprocAV2():
         focal_idx, av_idx = None, None
         scored_idcs, unscored_idcs, fragment_idcs = list(), list(), list()  # exclude AV
         for idx, x in enumerate(scenario.tracks):
-            if x.track_id == scenario.focal_track_id and x.category == TrackCategory.FOCAL_TRACK: # 焦点轨迹
+            if x.track_id == scenario.focal_track_id and x.category == TrackCategory.FOCAL_TRACK:
                 focal_idx = idx
-            elif x.track_id == 'AV':    # 自车轨迹
+            elif x.track_id == 'AV':
                 av_idx = idx
-            elif x.category == TrackCategory.SCORED_TRACK:      # 其余参与评估的轨迹
+            elif x.category == TrackCategory.SCORED_TRACK:
                 scored_idcs.append(idx)
-            elif x.category == TrackCategory.UNSCORED_TRACK:    # 未参与评估的轨迹
+            elif x.category == TrackCategory.UNSCORED_TRACK:
                 unscored_idcs.append(idx)
-            elif x.category == TrackCategory.TRACK_FRAGMENT:    # 不完整的轨迹
+            elif x.category == TrackCategory.TRACK_FRAGMENT:
                 fragment_idcs.append(idx)
 
         assert av_idx is not None, '[ERROR] Wrong av_idx'
         assert focal_idx is not None, '[ERROR] Wrong focal_idx'
         assert av_idx not in unscored_idcs, '[ERROR] Duplicated av_idx'
 
-        sorted_idcs = [focal_idx, av_idx] + scored_idcs + unscored_idcs + fragment_idcs # actor标识符
+        sorted_idcs = [focal_idx, av_idx] + scored_idcs + unscored_idcs + fragment_idcs
         sorted_cat = ["focal", "av"] + ["score"] * \
-            len(scored_idcs) + ["unscore"] * len(unscored_idcs) + ["frag"] * len(fragment_idcs) # 轨迹类别
-        sorted_tid = [scenario.tracks[idx].track_id for idx in sorted_idcs]    # 轨迹id
+            len(scored_idcs) + ["unscore"] * len(unscored_idcs) + ["frag"] * len(fragment_idcs)
+        sorted_tid = [scenario.tracks[idx].track_id for idx in sorted_idcs]
         # print(focal_idx, av_idx, scored_idcs, unscored_idcs)
         # print('total: ', len(scenario.tracks),
         #       'focal & av: [{}, {}]'.format(focal_idx,  av_idx),
@@ -311,7 +312,7 @@ class ArgoPreprocAV2():
                        rot: np.ndarray,
                        static_map: ArgoverseStaticMap):
         node_ctrs, node_vecs, lane_type, intersect, cross_left, cross_right, left, right = [], [], [], [], [], [], [], []
-        lane_ctrs, lane_vecs, lane_ids = [], [], []
+        lane_ctrs, lane_vecs = [], []
         NUM_SEG_POINTS = 10
 
         for lane_id, lane in static_map.vector_lane_segments.items():
@@ -321,174 +322,137 @@ class ArgoPreprocAV2():
                 lane_id, cl_raw.shape[0])
 
             cl_ls = LineString(cl_raw)
-            num_segs = np.max([int(np.floor(cl_ls.length / self.SEG_LENGTH)), 5])
-            cl_pts = []
-            for s in np.linspace(0, cl_ls.length, num_segs + 1): 
-                cl_pts.append(cl_ls.interpolate(s))
+            num_segs = np.max([int(np.floor(cl_ls.length / self.SEG_LENGTH)), 1])
+            ds = cl_ls.length / num_segs
 
-            ctrln = np.array(LineString(cl_pts).coords)  # [num_sub_segs + 1, 2]
-            ctrln = (ctrln - orig).dot(rot)  # to local frame
+            for i in range(num_segs):
+                s_lb = i * ds
+                s_ub = (i + 1) * ds
+                num_sub_segs = self.SEG_N_NODE
 
-            anch_pos = np.mean(ctrln, axis=0)
-            anch_vec = (ctrln[-1] - ctrln[0]) / np.linalg.norm(ctrln[-1] - ctrln[0])
-            anch_rot = np.array([[anch_vec[0], -anch_vec[1]],
-                                    [anch_vec[1], anch_vec[0]]])
+                cl_pts = []
+                for s in np.linspace(s_lb, s_ub, num_sub_segs + 1):
+                    cl_pts.append(cl_ls.interpolate(s))
+                ctrln = np.array(LineString(cl_pts).coords)  # [num_sub_segs + 1, 2]
+                ctrln = (ctrln - orig).dot(rot)  # to local frame
 
-            lane_ctrs.append(anch_pos)
-            lane_vecs.append(anch_vec)
+                anch_pos = np.mean(ctrln, axis=0)
+                anch_vec = (ctrln[-1] - ctrln[0]) / np.linalg.norm(ctrln[-1] - ctrln[0])
+                anch_rot = np.array([[anch_vec[0], -anch_vec[1]],
+                                     [anch_vec[1], anch_vec[0]]])
 
-            ctrln = (ctrln - anch_pos).dot(anch_rot)  # to instance frame
+                lane_ctrs.append(anch_pos)
+                lane_vecs.append(anch_vec)
 
-            ctrs = np.asarray((ctrln[:-1] + ctrln[1:]) / 2.0, np.float32)
-            vecs = np.asarray(ctrln[1:] - ctrln[:-1], np.float32)
-            node_ctrs.append(ctrs)  # middle point
-            node_vecs.append(vecs)
+                ctrln = (ctrln - anch_pos).dot(anch_rot)  # to instance frame
 
-            # ~ lane type
-            lane_type_tmp = np.zeros(3)
-            if lane.lane_type == LaneType.VEHICLE:
-                lane_type_tmp[0] = 1
-            elif lane.lane_type == LaneType.BIKE:
-                lane_type_tmp[1] = 1
-            elif lane.lane_type == LaneType.BUS:
-                lane_type_tmp[2] = 1
-            else:
-                assert False, "[Error] Wrong lane type"
-            lane_type.append(np.expand_dims(lane_type_tmp, axis=0).repeat(num_segs, axis=0))
+                ctrs = np.asarray((ctrln[:-1] + ctrln[1:]) / 2.0, np.float32)
+                vecs = np.asarray(ctrln[1:] - ctrln[:-1], np.float32)
+                node_ctrs.append(ctrs)  # middle point
+                node_vecs.append(vecs)
 
-            # ~ intersection
-            if lane.is_intersection:
-                intersect.append(np.ones(num_segs, np.float32))
-            else:
-                intersect.append(np.zeros(num_segs, np.float32))
+                # ~ lane type
+                lane_type_tmp = np.zeros(3)
+                if lane.lane_type == LaneType.VEHICLE:
+                    lane_type_tmp[0] = 1
+                elif lane.lane_type == LaneType.BIKE:
+                    lane_type_tmp[1] = 1
+                elif lane.lane_type == LaneType.BUS:
+                    lane_type_tmp[2] = 1
+                else:
+                    assert False, "[Error] Wrong lane type"
+                lane_type.append(np.expand_dims(lane_type_tmp, axis=0).repeat(num_sub_segs, axis=0))
 
-            # ~ lane marker type
-            cross_left_tmp = np.zeros(3)
-            if lane.left_mark_type in [LaneMarkType.DASH_SOLID_YELLOW,
-                                        LaneMarkType.DASH_SOLID_WHITE,
-                                        LaneMarkType.DASHED_WHITE,
-                                        LaneMarkType.DASHED_YELLOW,
-                                        LaneMarkType.DOUBLE_DASH_YELLOW,
-                                        LaneMarkType.DOUBLE_DASH_WHITE]:
-                cross_left_tmp[0] = 1  # crossable
-            elif lane.left_mark_type in [LaneMarkType.DOUBLE_SOLID_YELLOW,
-                                            LaneMarkType.DOUBLE_SOLID_WHITE,
-                                            LaneMarkType.SOLID_YELLOW,
-                                            LaneMarkType.SOLID_WHITE,
-                                            LaneMarkType.SOLID_DASH_WHITE,
-                                            LaneMarkType.SOLID_DASH_YELLOW,
-                                            LaneMarkType.SOLID_BLUE]:
-                cross_left_tmp[1] = 1  # not crossable
-            else:
-                cross_left_tmp[2] = 1  # unknown/none
+                # ~ intersection
+                if lane.is_intersection:
+                    intersect.append(np.ones(num_sub_segs, np.float32))
+                else:
+                    intersect.append(np.zeros(num_sub_segs, np.float32))
 
-            cross_right_tmp = np.zeros(3)
-            if lane.right_mark_type in [LaneMarkType.DASH_SOLID_YELLOW,
-                                        LaneMarkType.DASH_SOLID_WHITE,
-                                        LaneMarkType.DASHED_WHITE,
-                                        LaneMarkType.DASHED_YELLOW,
-                                        LaneMarkType.DOUBLE_DASH_YELLOW,
-                                        LaneMarkType.DOUBLE_DASH_WHITE]:
-                cross_right_tmp[0] = 1  # crossable
-            elif lane.right_mark_type in [LaneMarkType.DOUBLE_SOLID_YELLOW,
-                                            LaneMarkType.DOUBLE_SOLID_WHITE,
-                                            LaneMarkType.SOLID_YELLOW,
-                                            LaneMarkType.SOLID_WHITE,
-                                            LaneMarkType.SOLID_DASH_WHITE,
-                                            LaneMarkType.SOLID_DASH_YELLOW,
-                                            LaneMarkType.SOLID_BLUE]:
-                cross_right_tmp[1] = 1  # not crossable
-            else:
-                cross_right_tmp[2] = 1  # unknown/none
+                # ~ lane marker type
+                cross_left_tmp = np.zeros(3)
+                if lane.left_mark_type in [LaneMarkType.DASH_SOLID_YELLOW,
+                                           LaneMarkType.DASH_SOLID_WHITE,
+                                           LaneMarkType.DASHED_WHITE,
+                                           LaneMarkType.DASHED_YELLOW,
+                                           LaneMarkType.DOUBLE_DASH_YELLOW,
+                                           LaneMarkType.DOUBLE_DASH_WHITE]:
+                    cross_left_tmp[0] = 1  # crossable
+                elif lane.left_mark_type in [LaneMarkType.DOUBLE_SOLID_YELLOW,
+                                             LaneMarkType.DOUBLE_SOLID_WHITE,
+                                             LaneMarkType.SOLID_YELLOW,
+                                             LaneMarkType.SOLID_WHITE,
+                                             LaneMarkType.SOLID_DASH_WHITE,
+                                             LaneMarkType.SOLID_DASH_YELLOW,
+                                             LaneMarkType.SOLID_BLUE]:
+                    cross_left_tmp[1] = 1  # not crossable
+                else:
+                    cross_left_tmp[2] = 1  # unknown/none
 
-            cross_left.append(np.expand_dims(cross_left_tmp, axis=0).repeat(num_segs, axis=0))
-            cross_right.append(np.expand_dims(cross_right_tmp, axis=0).repeat(num_segs, axis=0))
+                cross_right_tmp = np.zeros(3)
+                if lane.right_mark_type in [LaneMarkType.DASH_SOLID_YELLOW,
+                                            LaneMarkType.DASH_SOLID_WHITE,
+                                            LaneMarkType.DASHED_WHITE,
+                                            LaneMarkType.DASHED_YELLOW,
+                                            LaneMarkType.DOUBLE_DASH_YELLOW,
+                                            LaneMarkType.DOUBLE_DASH_WHITE]:
+                    cross_right_tmp[0] = 1  # crossable
+                elif lane.right_mark_type in [LaneMarkType.DOUBLE_SOLID_YELLOW,
+                                              LaneMarkType.DOUBLE_SOLID_WHITE,
+                                              LaneMarkType.SOLID_YELLOW,
+                                              LaneMarkType.SOLID_WHITE,
+                                              LaneMarkType.SOLID_DASH_WHITE,
+                                              LaneMarkType.SOLID_DASH_YELLOW,
+                                              LaneMarkType.SOLID_BLUE]:
+                    cross_right_tmp[1] = 1  # not crossable
+                else:
+                    cross_right_tmp[2] = 1  # unknown/none
 
-            # ~ has left/right neighbor
-            if lane.left_neighbor_id is None:
-                left.append(np.zeros(num_segs, np.float32))  # w/o left neighbor
-            else:
-                left.append(np.ones(num_segs, np.float32))
-            if lane.right_neighbor_id is None:
-                right.append(np.zeros(num_segs, np.float32))  # w/o right neighbor
-            else:
-                right.append(np.ones(num_segs, np.float32))
-                # we now compute lane-level features
-            lane_ids.append(lane_id)
+                cross_left.append(np.expand_dims(cross_left_tmp, axis=0).repeat(num_sub_segs, axis=0))
+                cross_right.append(np.expand_dims(cross_right_tmp, axis=0).repeat(num_sub_segs, axis=0))
 
-        # lane indices
+                # ~ has left/right neighbor
+                if lane.left_neighbor_id is None:
+                    left.append(np.zeros(num_sub_segs, np.float32))  # w/o left neighbor
+                else:
+                    left.append(np.ones(num_sub_segs, np.float32))
+                if lane.right_neighbor_id is None:
+                    right.append(np.zeros(num_sub_segs, np.float32))  # w/o right neighbor
+                else:
+                    right.append(np.ones(num_sub_segs, np.float32))
+
         node_idcs = []  # List of range
         count = 0
         for i, ctr in enumerate(node_ctrs):
             node_idcs.append(range(count, count + len(ctr)))
             count += len(ctr)
-        num_nodes = count
-        num_lanes = len(node_idcs)
 
-        nodes_of_lane = []  # node belongs to which lane, e.g. [0   0   0 ... 122 122 122]
+        lane_idcs = []  # node belongs to which lane, e.g. [0   0   0 ... 122 122 122]
         for i, idcs in enumerate(node_idcs):
-            nodes_of_lane.append(i * np.ones(len(idcs), np.int16))
-        nodes_of_lane = np.concatenate(nodes_of_lane, 0)
-
-        pre_pairs, suc_pairs, left_pairs, right_pairs = [], [], [], []
-        for i, lane_segment in enumerate(static_map.vector_lane_segments.values()):
-            lane = lane_segment 
-
-            nbr_ids = lane.predecessors
-            if nbr_ids is not None:
-                for nbr_id in nbr_ids:
-                    if nbr_id in lane_ids:
-                        j = lane_ids.index(nbr_id)
-                        pre_pairs.append([[i],[j]])
-
-            nbr_ids = lane.successors
-            if nbr_ids is not None:
-                for nbr_id in nbr_ids:
-                    if nbr_id in lane_ids:
-                        j = lane_ids.index(nbr_id)
-                        suc_pairs.append([[i],[j]])
-
-            nbr_id = lane.left_neighbor_id
-            if nbr_id is not None:
-                if nbr_id in lane_ids:
-                    j = lane_ids.index(nbr_id)
-                    left_pairs.append([[i],[j]])
-
-            nbr_id = lane.right_neighbor_id
-            if nbr_id is not None:
-                if nbr_id in lane_ids:
-                    j = lane_ids.index(nbr_id)
-                    right_pairs.append([[i],[j]])
-        
-        pre_pairs = np.concatenate(pre_pairs,1,dtype=np.int64) if pre_pairs else np.empty((2, 0), dtype=np.int16)
-        suc_pairs = np.concatenate(suc_pairs,1,dtype=np.int64) if suc_pairs else np.empty((2, 0), dtype=np.int16)
-        left_pairs = np.concatenate(left_pairs,1,dtype=np.int64) if left_pairs else np.empty((2, 0), dtype=np.int16)
-        right_pairs = np.concatenate(right_pairs,1,dtype=np.int64) if right_pairs else np.empty((2, 0), dtype=np.int16)
+            lane_idcs.append(i * np.ones(len(idcs), np.int16))
+        # print("lane_idcs: ", lane_idcs.shape, lane_idcs)
 
         graph = dict()
         # geometry
-        graph['node_ctrs'] = np.concatenate(node_ctrs, axis=0).astype(np.float32)   # [num_nodes, 2]
-        graph['node_vecs'] = np.concatenate(node_vecs, axis=0).astype(np.float32)
+        graph['node_ctrs'] = np.stack(node_ctrs, axis=0).astype(np.float32)
+        graph['node_vecs'] = np.stack(node_vecs, axis=0).astype(np.float32)
         graph['lane_ctrs'] = np.array(lane_ctrs).astype(np.float32)
         graph['lane_vecs'] = np.array(lane_vecs).astype(np.float32)
         # node features
-        graph['lane_type'] = np.concatenate(lane_type, axis=0).astype(np.int16)
-        graph['intersect'] = np.concatenate(intersect, axis=0).astype(np.int16)
-        graph['cross_left'] = np.concatenate(cross_left, axis=0).astype(np.int16)
-        graph['cross_right'] = np.concatenate(cross_right, axis=0).astype(np.int16)
-        graph['left'] = np.concatenate(left, axis=0).astype(np.int16)
-        graph['right'] = np.concatenate(right, axis=0).astype(np.int16)
-        # 连接性
-        graph['pre_pairs'] = pre_pairs
-        graph['suc_pairs'] = suc_pairs # [2,num_edges]
-        graph['left_pairs'] = left_pairs
-        graph['right_pairs'] = right_pairs
+        graph['lane_type'] = np.stack(lane_type, axis=0).astype(np.int16)
+        graph['intersect'] = np.stack(intersect, axis=0).astype(np.int16)
+        graph['cross_left'] = np.stack(cross_left, axis=0).astype(np.int16)
+        graph['cross_right'] = np.stack(cross_right, axis=0).astype(np.int16)
+        graph['left'] = np.stack(left, axis=0).astype(np.int16)
+        graph['right'] = np.stack(right, axis=0).astype(np.int16)
 
+        # for k, v in graph.items():
+        #     # node_ctrs, node_vecs, lane_type, intersect, cross_left, cross_right, left, right
+        #     print(k, v.shape)
 
         # # node - lane
-        graph['num_nodes'] = num_nodes
-        graph['num_lanes'] = num_lanes
-        graph['nodes_of_lane'] = nodes_of_lane.astype(np.int16)  # [
+        graph['num_nodes'] = graph['node_ctrs'].shape[0] * graph['node_ctrs'].shape[1]
+        graph['num_lanes'] = graph['lane_ctrs'].shape[0]
         # print('nodes: {}, lanes: {}'.format(graph['num_nodes'], graph['num_lanes']))
         return graph
 

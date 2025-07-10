@@ -10,7 +10,65 @@ import torch
 import torch.distributed as dist
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pad_sequence
 
+from thop import profile
+from thop import clever_format
+from fvcore.nn import FlopCountAnalysis, parameter_count_table
+
+def remove_thop_attributes(model):
+    for name, module in model.named_modules():
+        for attr in ["total_ops", "total_params"]:
+            if hasattr(module, attr):
+                delattr(module, attr)
+
+def get_pf(model, input):
+    print("calculate flops and params:\n")
+    model.eval()  # 切换到 eval 模式，防止 Dropout / BN 出错
+    with torch.no_grad():  # 禁用 autograd
+        macs, params = profile(model, inputs=(input,))
+        macs, params = clever_format([macs, params], "%.3f")
+        wrapped_model = WrappedModel(model)
+        flops = FlopCountAnalysis(wrapped_model, input)
+        remove_thop_attributes(model)
+    return macs, flops.total(), params, parameter_count_table(model)
+
+class WrappedModel(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, *inputs):  # 解包 tuple
+        return self.model(inputs)  # 保持原模型习惯接收一个 tuple
+
+def pad_feats_and_create_mask(agent_feats, lane_feats):
+    """
+    Args:
+        agent_feats: List[Tensor[N_a_i, D]]
+        lane_feats:  List[Tensor[N_l_i, D]]
+    Returns:
+        agent_feats_padded: [B, N_max_a, D]
+        agent_padding_mask: [B, N_max_a]  # True 表示被mask掉
+        lane_feats_padded:  [B, N_max_l, D]
+        lane_padding_mask:  [B, N_max_l]
+    """
+    B = len(agent_feats)
+    device = agent_feats[0].device
+    D = agent_feats[0].size(1)
+
+    # [N_a_i, D] -> pad to [N_max, D], then stack -> [B, N_max, D]
+    agent_feats_padded = pad_sequence(agent_feats, batch_first=True)  # [B, N_max_a, D]
+    lane_feats_padded  = pad_sequence(lane_feats, batch_first=True)   # [B, N_max_l, D]
+
+    # 创建 mask，True 表示被 mask（即 padding）
+    agent_padding_mask = torch.ones(agent_feats_padded.shape[:2], dtype=torch.bool, device=device)
+    lane_padding_mask  = torch.ones(lane_feats_padded.shape[:2], dtype=torch.bool, device=device)
+
+    for i, (a, l) in enumerate(zip(agent_feats, lane_feats)):
+        agent_padding_mask[i, :a.size(0)] = False
+        lane_padding_mask[i, :l.size(0)]  = False
+
+    return agent_feats_padded, agent_padding_mask, lane_feats_padded, lane_padding_mask
 
 def set_seed(seed):
     torch.manual_seed(seed)

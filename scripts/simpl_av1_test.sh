@@ -5,4 +5,4 @@ CUDA_VISIBLE_DEVICES=0 python test.py \
   --val_batch_size 16 \
   --use_cuda \
   --adv_cfg_path cfg.simpl_cfg \
-  --model_path saved_models/20250618-083330/Simpl_ddp_best.tar
+  --model_path saved_models/20250708-220436_Simpl_epoch50.tar

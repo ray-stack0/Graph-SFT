@@ -126,7 +126,7 @@ class Loader:
             self.print('-- {} {}'.format(subnet, numelem))
 
         if self.resume:
-            model.load_state_dict(self.ckpt["state_dict"])
+            model.load_state_dict(self.ckpt["state_dict"], strict=False)
 
         if self.is_ddp:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(self.device)  # SyncBN
