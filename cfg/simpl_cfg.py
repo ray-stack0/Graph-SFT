@@ -8,7 +8,7 @@ class AdvCfg():
         self.g_cfg['g_num_modes'] = 6
         self.g_cfg['g_obs_len'] = 20
         self.g_cfg['g_pred_len'] = 30
-
+        self.g_cfg["out_prob"] = False  
         #* dataset cfg
         self.data_cfg = dict()
         self.data_cfg['dataset'] = "simpl.av1_dataset:ArgoDataset" 
@@ -19,13 +19,14 @@ class AdvCfg():
         self.net_cfg["init_weights"] = False
         self.net_cfg["in_actor"] = 3
         self.net_cfg["d_actor"] = 128
-        self.net_cfg["n_fpn_scale"] = 4
+        self.net_cfg["n_fpn_scale"] = 3
         self.net_cfg["in_lane"] = 10
         self.net_cfg["d_lane"] = 128
         self.net_cfg["num_l2l_layer"] = 2 # 编码的层数
         self.net_cfg["num_a2a_layer"] = 2 # 编码的层数
         self.net_cfg["edge_type_d"] = 5
         self.net_cfg["rpe_type_d"] = 5 + self.net_cfg["edge_type_d"]
+        
 
         self.net_cfg["token_fuse_mode"] = 'res' # 'weighted_sum'/concat_mlp'/'attn'/'last'/res
         self.net_cfg["d_rpe_in"] = 12
@@ -86,7 +87,7 @@ class AdvCfg():
             self.opt_cfg['T_max'] = 50
             self.opt_cfg['eta_min'] = 1e-5
         elif self.opt_cfg['scheduler'] == 'cosine_warmup':
-            self.opt_cfg['init_lr'] = 2e-3
+            self.opt_cfg['init_lr'] = 1.5e-3
             self.opt_cfg['T_max'] = 50
             self.opt_cfg['eta_min'] = 2e-4
             self.opt_cfg['T_warmup'] = 5
@@ -96,7 +97,7 @@ class AdvCfg():
             self.opt_cfg['gamma'] = 0.1
         elif self.opt_cfg['scheduler'] == 'polyline':
             self.opt_cfg['init_lr'] = 1e-4
-            self.opt_cfg['milestones'] = [0, 5, 25, 30, 35, 40]
+            self.opt_cfg['milestones'] = [0, 5, 25, 30, 40, 45]
             self.opt_cfg['values'] = [1e-4, 1e-3, 1e-3, 5e-4, 5e-4, 1e-4]
 
         
@@ -105,6 +106,10 @@ class AdvCfg():
         self.eval_cfg['evaluator'] = 'utils.evaluator:TrajPredictionEvaluator'
         self.eval_cfg['data_ver'] = 'av1'
         self.eval_cfg['miss_thres'] = 2.0
+
+        # * 是否输出logits还是softmax
+        if self.loss_cfg["use_aWTA_cls"]:
+            self.g_cfg["out_prob"] = False
 
 
 

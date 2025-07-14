@@ -151,7 +151,7 @@ class ActorNet(nn.Module):
         norm = "GN"
         ng = 1
 
-        n_out = [2**(5 + s) for s in range(n_fpn_scale)]  # [32, 64, 128]
+        n_out = [2**(5 + s) for s in range(n_fpn_scale)]  # [32, 64, 128， 256]
         blocks = [Res1d] * n_fpn_scale
         num_blocks = [2] * n_fpn_scale
         self.num_layers = num_layers
@@ -1250,13 +1250,7 @@ class GlobalQueryTokenExtractor(nn.Module):
         self.norm1 = nn.LayerNorm(d_model) 
         self.norm2 = nn.LayerNorm(d_model)
         self.attn = nn.MultiheadAttention(d_model, num_heads=num_heads, batch_first=True, dropout=dropout)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, 2*d_model),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(2*d_model, d_model),
-            nn.Dropout(dropout)
-        )
+
 
     def forward(self, agent_feat_global, lane_feat_global,
                 agent_padding_mask, lane_padding_mask):
@@ -1266,9 +1260,10 @@ class GlobalQueryTokenExtractor(nn.Module):
           lane_feat_global:      [B, N_l, D]
           agent_padding_mask:    [B, N_a]  (1: valid, 0: pad)
           lane_padding_mask:     [B, N_l]
+          query:                 [B, N_a * K, D]  (可选) 使用 agent_feat_global 作为 query
 
         Returns:
-          global_token:          [B, N_a, D]  每个 agent 感知的全局语义
+          global_token:          [B, N_a*K, D]  每个 agent 感知的全局语义
         """
         B, N_a, D = agent_feat_global.shape
 
@@ -1276,21 +1271,14 @@ class GlobalQueryTokenExtractor(nn.Module):
         env_feat = torch.cat([agent_feat_global, lane_feat_global], dim=1)     # [B, N_all, D]
         env_mask = torch.cat([agent_padding_mask, lane_padding_mask], dim=1)   # [B, N_all]
         key_padding_mask = env_mask                                            # [B, N_all]
-        # 使用 agent_feat_global 作为 query
-        query = agent_feat_global                                              # [B, N_a, D]
         # 多头注意力
         attn_out, _ = self.attn(
-            query=query,
+            query=agent_feat_global,
             key=env_feat,
             value=env_feat,
             key_padding_mask=key_padding_mask
-        )  # [B, N_a, D]
-        x = agent_feat_global + attn_out  # Residual
-
-        # === 2. Feedforward + Residual ===
-        x = self.norm2(x + self.ffn(self.norm1(x)))   # [B, N_a, D]
-
-        return x  # 每个 agent 的全局感知特征
+        )  # [B, N_a * K, D]
+        return attn_out  # 每个 agent 的全局感知特征
 
 class ModeQueryRefineDecoder(nn.Module):
     def __init__(self, device, cfg):
@@ -1300,7 +1288,8 @@ class ModeQueryRefineDecoder(nn.Module):
         self.d_model = cfg['d_embed']
         num_heads = cfg['n_decoder_head']
         d_pos = cfg['d_pos']
-        dropout = cfg['dropout']
+        # dropout = 0.1
+        self.out_prob = cfg['out_prob']
 
         # 位置映射层
         self.agent_pos_g = nn.Sequential(nn.Linear(self.d_model + d_pos, self.d_model),
@@ -1312,7 +1301,7 @@ class ModeQueryRefineDecoder(nn.Module):
                                         nn.ReLU(inplace=True))
 
         # 生成全局 query 的模块
-        self.global_query_generator = GlobalQueryTokenExtractor(self.d_model, num_heads, dropout=dropout)
+        self.global_query_generator = GlobalQueryTokenExtractor(self.d_model, num_heads, dropout=0.0)
         # 
         dim_mm = self.d_model * self.num_modes
         dim_inter = dim_mm // 2
@@ -1333,22 +1322,28 @@ class ModeQueryRefineDecoder(nn.Module):
             )
         
         self.cls = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model // 2),
-            nn.LayerNorm(self.d_model // 2),
+            nn.Linear(2 * self.d_model, self.d_model),
+            nn.LayerNorm(self.d_model),
             nn.ReLU(inplace=True),
-            nn.Linear(self.d_model // 2, 1)
+            nn.Linear(self.d_model , 1)
         )
+
+        # self.offset_gate = nn.Sequential(
+        #     nn.Linear(2 * self.d_model, self.d_model),
+        #     nn.ReLU(),
+        #     nn.Linear(self.d_model, 1),
+        #     nn.Sigmoid()  # 输出范围在 [0,1]
+        # )
 
         # refine MLP
         self.refine_mlp = nn.Sequential(
             nn.Linear(2 * self.d_model, self.d_model),
             nn.LayerNorm(self.d_model),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
             nn.Linear(self.d_model, self.d_model),
             nn.LayerNorm(self.d_model),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(self.d_model, self.T * 2)
         )
         self.offset_scale = 1  # 可调的偏移缩放系数
@@ -1375,32 +1370,36 @@ class ModeQueryRefineDecoder(nn.Module):
         agent_feat_global = self.agent_pos_g(torch.cat([agent_feats_padded, padded_agent_pose],dim=2))  
         lane_feat_global = self.lane_pos_g(torch.cat([lane_feats_padded, padded_lane_pose],dim=2)) 
 
-        # 2. 提取全局特征
-        global_query = self.global_query_generator(agent_feat_global, lane_feat_global,
-                                                   agent_padding_mask, lane_padding_mask)  # [B,N_a,D]
-
-        # 3. 使用局部坐标下的特征初步预测，agent_feats_padded
-        embed = self.multihead_proj(agent_feats_padded).view(B, N_a, K, D)  # [B, N_a, K, D]
+        # 2. 生成多模态查询,同时初步预测轨迹
+        # todo:尝试采用query与embed cat得到多模态特征
+        embed = self.multihead_proj(agent_feats_padded).view(B, N_a ,K, D)  # [B, N_a * K, D]
         traj = self.reg(embed).view(B,N_a,K,-1,2)  # [B, N_a, K, T*2]
 
-        # # 4. 根据agent_feat_global从全局特征中提取全局信息，将全局信息与局部进行进行融合并预测offset
-        offset_embed = torch.cat([global_query.unsqueeze(2).expand(-1, -1, K, -1), 
-                                  embed.detach()], dim=-1)              # [B, N_a, K, 2D]
-        offset = self.refine_mlp(offset_embed).view(B, N_a, K, -1, 2)   # [B, N_a, K, T, 2]
-        traj = traj + offset * self.offset_scale                        # [B, N_a, K, T, 2]
+        # 3. 提取全局特征
+        offset_embed = self.global_query_generator(agent_feat_global, lane_feat_global,
+                                                   agent_padding_mask, lane_padding_mask) # [B, N_a, D]
+        offset_embed = offset_embed.unsqueeze(2).repeat(1, 1, K, 1)  # [B, N_a, K, D]
+
+        # 4. 微调轨迹
+        fused_embed = torch.cat([offset_embed, embed.detach()], dim=-1)  # [B, N_a, K, D*2]
+        offset = self.refine_mlp(fused_embed).view(B, N_a, K, -1, 2)   # [B, N_a, K, T, 2]
+        # gate = self.offset_gate(fused_embed).view(B, N_a, K, 1, 1)  # [B, N_a, K, 1]
+        traj = traj + (offset * self.offset_scale)                        # [B, N_a, K, T, 2]
+        vel = torch.gradient(traj, dim=-2)[0] / 0.1
         # 5. 计算模态置信度
-        conf = self.cls(embed).view(B, N_a, K)
-        # conf = F.softmax(conf,dim=-1)
-        res_traj, res_conf = [], []
+        conf = self.cls(torch.cat([offset_embed.detach(), embed], dim=-1)).view(B, N_a, K)
+        if self.out_prob:
+            conf = F.softmax(conf,dim=-1)
+        res_traj, res_conf, res_aux = [], [], []
         # 遍历每个 batch
         for i in range(traj.shape[0]):  # B
             # 取出第 i 个 batch 的 mask 和 query
             mask = ~agent_padding_mask[i]  # [N_a], True 表示有效
             res_traj.append(traj[i][mask])
             res_conf.append(conf[i][mask])
+            res_aux.append((vel[i][mask], None))
 
-        return res_conf, res_traj, None
-
+        return res_conf, res_traj, res_aux
 
 
 
@@ -1814,7 +1813,7 @@ class Simpl(nn.Module):
             self.pred_net = ModeQueryRefineDecoder(device, cfg)
 
         self.edge_type_embedding = nn.Embedding(num_embeddings=7, embedding_dim=cfg['edge_type_d'])
-
+        self.out_prob = cfg['out_prob']  # 是否输出概率
         if cfg["init_weights"]:
             self.apply(init_weights)
 
@@ -1905,7 +1904,8 @@ class Simpl(nn.Module):
         # get prediction results for target vehicles only
         reg = torch.stack([trajs[0] for trajs in res_reg], dim=0)
         cls = torch.stack([probs[0] for probs in res_cls], dim=0)
-        cls = F.softmax(cls, dim=1)
+        if not self.out_prob:   # 解码器输出不是概率
+            cls = F.softmax(cls, dim=1)
         post_out['out_raw'] = out
         post_out['traj_pred'] = reg  # batch x n_mod x pred_len x 2
         post_out['prob_pred'] = cls  # batch x n_mod

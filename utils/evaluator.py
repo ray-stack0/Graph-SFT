@@ -16,7 +16,7 @@ class TrajPredictionEvaluator():
 
     def evaluate(self, post_out, data):
         traj_pred = post_out['traj_pred']
-        prob_pred = F.softmax(post_out['prob_pred'], dim=1)
+        prob_pred = post_out['prob_pred']
         # traj_pred:    batch x n_mod x pred_len x 2
         # prob_pred:    batch x n_mod
 

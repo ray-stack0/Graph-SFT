@@ -7,4 +7,4 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
   --data_aug \
   --use_cuda \
   --logger_writer \
-  --adv_cfg_path config.simpl_av2_cfg
+  --adv_cfg_path cfg.simpl_av2_cfg

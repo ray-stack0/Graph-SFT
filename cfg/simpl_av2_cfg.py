@@ -20,7 +20,7 @@ class AdvCfg():
         self.net_cfg["in_actor"] = 14
         self.net_cfg["d_actor"] = 128
         self.net_cfg["num_a2a_layer"] = 3 # 编码的层数
-        self.net_cfg["n_fpn_scale"] = 4
+        self.net_cfg["n_fpn_scale"] = 3
         self.net_cfg["in_lane"] = 16
         self.net_cfg["d_lane"] = 128
         self.net_cfg["num_l2l_layer"] = 3 # 编码的层数
@@ -31,7 +31,7 @@ class AdvCfg():
         self.net_cfg["d_rpe_in"] = 5
         self.net_cfg["d_rpe"] = 128
         self.net_cfg["d_embed"] = 128
-        self.net_cfg["n_scene_layer"] = 4
+        self.net_cfg["n_scene_layer"] = 6
         self.net_cfg["n_scene_head"] = 8
         self.net_cfg['use_diff_mha'] = False
         self.net_cfg["dropout"] = 0.1
@@ -74,13 +74,12 @@ class AdvCfg():
             self.loss_cfg["init_temperature_reg"] = 8
 
         #* optimizer config
-        opt_cfg = dict()
-        opt_cfg['opt'] = 'adam'
-        opt_cfg['weight_decay'] = 0.0
-        opt_cfg['lr_scale_func'] = 'none'  # none/sqrt/linear
+        self.opt_cfg = dict()
+        self.opt_cfg['opt'] = 'adam'
+        self.opt_cfg['weight_decay'] = 0.0
+        self.opt_cfg['lr_scale_func'] = 'none'  # none/sqrt/linear
 
         # scheduler
-        self.opt_cfg = dict()
         self.opt_cfg['scheduler'] = 'polyline'
 
         if self.opt_cfg['scheduler'] == 'cosine':

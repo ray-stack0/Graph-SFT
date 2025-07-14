@@ -125,12 +125,13 @@ class LossFunc(nn.Module):
         with torch.no_grad():
             soft_label = F.softmax(-dist_sel / temperature, dim=1)  # 不再手动加 log，避免数值不稳定
             traj_len = (last_idcs + 1).float()
-            len_weight = traj_len/traj_len.mean()  # [N]
+            # len_weight = traj_len/traj_len.mean()  # [N]
 
         # 注意 F.kl_div 要求 logits_sel 已经是 log_softmax
         log_probs = F.log_softmax(logits_sel, dim=1)
-        kl_per_sample = F.kl_div(log_probs, soft_label, reduction='none').sum(dim=1)  # N
-        cls_loss = (kl_per_sample * len_weight).mean()
+        # kl_per_sample = F.kl_div(log_probs, soft_label, reduction='none').sum(dim=1)  # N
+        cls_loss = F.kl_div(log_probs, soft_label, reduction='batchmean')
+        # cls_loss = (kl_per_sample * len_weight).mean()
         return cls_loss
 
 
@@ -182,7 +183,6 @@ class LossFunc(nn.Module):
         #* cls
         if not self.use_aWTA_cls:
             min_dist, min_idcs = fde.min(1)
-            cls = F.softmax(cls,dim=1) # [N,K]
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
             mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
             mask1 = fde - min_dist.view(-1, 1) > self.config["cls_ignore"]

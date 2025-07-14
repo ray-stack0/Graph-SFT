@@ -94,6 +94,7 @@ def main():
                           batch_size=args.train_batch_size,
                           shuffle=True,
                           num_workers=8,
+                          prefetch_factor=4,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           pin_memory=True)
@@ -101,6 +102,7 @@ def main():
                         batch_size=args.val_batch_size,
                         shuffle=False,
                         num_workers=8,
+                        prefetch_factor=4,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         pin_memory=True)

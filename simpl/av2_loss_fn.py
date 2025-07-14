@@ -152,7 +152,7 @@ class LossFunc(nn.Module):
         #* cls
         if not self.use_aWTA_cls:
             min_dist, min_idcs = fde.min(1)
-            cls = F.softmax(cls,dim=1) # [N,K]
+            # cls = F.softmax(cls,dim=1) # [N,K]
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
             mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
             mask1 = fde - min_dist.view(-1, 1) > self.config["cls_ignore"]
@@ -252,8 +252,6 @@ class LossFunc(nn.Module):
                 cls_loss = self.compute_cls_loss(cls, ade, last_idcs, self.cls_mode)
             else:
                 cls_loss = self.compute_cls_loss(cls, fde, last_idcs, self.cls_mode)
-        loss_out["cls_loss"] = self.config["cls_coef"] * cls_loss
-
         loss_out["cls_loss"] = self.config["cls_coef"] * cls_loss
 
         #* reg

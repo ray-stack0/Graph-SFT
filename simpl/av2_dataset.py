@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 #
 import torch
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 #
 from utils.utils import from_numpy
 
@@ -24,6 +25,7 @@ class AV2Dataset(Dataset):
         self.mode = mode
         self.aug = aug
         self.verbose = verbose
+        self.l2a_dist_th = 50
 
         self.dataset_files = []
         self.dataset_len = -1
@@ -126,7 +128,7 @@ class AV2Dataset(Dataset):
         # print('trajs_ctrs: ', trajs_ctrs.shape)
         # print('TRAIN_MASK: ', trajs["TRAIN_MASK"].shape, trajs["TRAIN_MASK"])
 
-        # ~ yaw loss mask (for MOT with non-holonomic constraints)
+        # ~ yaw loss mask (for MOT with non-holonomic constraints), 针对行人不计算Yaw loss
         yaw_loss_mask = np.array([np.where(x)[0][0] in [0, 2, 3, 4] for x in trajs_type[:, -1]], dtype=bool)
         trajs["YAW_LOSS_MASK"] = yaw_loss_mask
         # print('yaw_loss_mask: ', trajs["YAW_LOSS_MASK"].shape, trajs["YAW_LOSS_MASK"])
@@ -341,7 +343,7 @@ class AV2Dataset(Dataset):
 
         act_feats = [x.transpose(1, 2) for x in act_feats]
         actors = torch.cat(act_feats, 0)  # [N_a, feat_len, 50], N_a is agent number in a batch
-        actors = actors[..., 2:]  # ! tmp solution
+        actors = actors[..., 2:]  # todo: ! tmp solution
         actor_idcs = []  # e.g. [tensor([0, 1, 2, 3]), tensor([ 4,  5,  6,  7,  8,  9, 10])]
         count = 0
         for i in range(batch_size):

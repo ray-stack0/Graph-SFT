@@ -4,7 +4,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
   --train_batch_size 16 \
   --val_batch_size 16 \
   --val_interval 2 \
-  --train_epoches 50 \
+  --train_epoches 60 \
   --data_aug \
   --use_cuda \
   --logger_writer \
