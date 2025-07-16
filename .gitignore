@@ -2,10 +2,11 @@
 *~
 */*.pyc
 log/*
-saved_models/20*
+saved_models/*
 data_argo/features*
 data_av2/features*
 log/
 saved_models/
 swanlog/
 results/
+opt/

@@ -113,7 +113,7 @@ if __name__ == "__main__":
     print("Num of sequences: ", num_sequences)
 
     # ! You can directly set the number of CPU cores to use
-    n_proc = multiprocessing.cpu_count() - 10 if not args.debug else 1
+    n_proc = multiprocessing.cpu_count() - 2 if not args.debug else 1
 
     batch_size = np.max([int(np.ceil(num_sequences / n_proc)), 1])
     print('n_proc: {}, batch_size: {}'.format(n_proc, batch_size))
