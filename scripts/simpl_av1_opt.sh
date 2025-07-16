@@ -8,7 +8,7 @@ python opt_paramerters.py \
   --train_batch_size 16 \
   --val_batch_size 16 \
   --val_interval 2 \
-  --train_epoches 20 \
+  --train_epoches 25 \
   --data_aug  \
   --use_cuda \
   --adv_cfg_path cfg.simpl_cfg \

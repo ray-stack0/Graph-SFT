@@ -8,6 +8,7 @@ class AdvCfg():
         self.g_cfg['g_num_modes'] = 6
         self.g_cfg['g_obs_len'] = 50
         self.g_cfg['g_pred_len'] = 60
+        self.g_cfg['out_prob'] = False
 
         #* dataset config
         self.data_cfg = dict()
@@ -34,7 +35,7 @@ class AdvCfg():
         self.net_cfg["n_scene_layer"] = 6
         self.net_cfg["n_scene_head"] = 8
         self.net_cfg['use_diff_mha'] = False
-        self.net_cfg["dropout"] = 0.1
+        self.net_cfg["dropout"] = 0.3
         self.net_cfg["update_edge"] = True
         self.net_cfg["use_nnconv"] = False  # 交互建模阶段是否采用NNConv
         self.net_cfg["use_fusion_gate"] = False
@@ -128,3 +129,13 @@ class AdvCfg():
     def get_eval_cfg(self):
         self.eval_cfg.update(self.g_cfg)  # append global config
         return self.eval_cfg
+    
+    def get_all_dict(self):
+        all_dict = dict()
+        all_dict['g_cfg'] = self.g_cfg
+        all_dict['net_cfg'] = self.net_cfg
+        all_dict['loss_cfg'] = self.loss_cfg
+        all_dict['opt_cfg'] = self.opt_cfg
+        all_dict['eval_cfg'] = self.eval_cfg
+        all_dict['data_cfg'] = self.data_cfg
+        return all_dict

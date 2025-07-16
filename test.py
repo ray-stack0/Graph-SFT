@@ -16,6 +16,11 @@ from utils.utils import AverageMeter, AverageMeterForDict
 
 import pandas as pd
 
+
+from av2.datasets.motion_forecasting import scenario_serialization
+
+from pathlib import Path
+
 def restore_trajectories(trajs,trajs_ctrs, trajs_vecs, orig, rot):
     # trajs: [batch,num_mode,num_step,2]
     # trajs_ctrs: List([num_agent,2])   trajs_vecs: List([num_agent,2])
@@ -66,6 +71,11 @@ def main():
     print('Args: {}\n'.format(args))
 
     faulthandler.enable()
+    # for av2
+    data_dir = os.path.join("/home/nvidia/ltp/Dataset/AV2", args.mode)
+    date_set = 'av1'
+    if "av2" in args.features_dir:
+        date_set = 'av2'
 
     if args.use_cuda and torch.cuda.is_available():
         device = torch.device("cuda", 0)
@@ -101,26 +111,55 @@ def main():
             out = net(data_in)
             post_out = net.post_process(out)
             # List{[1,6,30,2]}
-            restored_traj = restore_trajectories(post_out['traj_pred'],data['TRAJS_CTRS'],data['TRAJS_VECS'],data['ORIG'],data['ROT'])
+            
 
-            for argo_idx, pred_traj, pred_prob in zip(data['SEQ_ID'], restored_traj, post_out['prob_pred']):
-                preds[argo_idx] = pred_traj.squeeze()
-                x = pred_prob.squeeze().detach().cpu().numpy()
-                probabilities[argo_idx] = x
+            if date_set == 'av1':
+                restored_traj = restore_trajectories(post_out['traj_pred'],data['TRAJS_CTRS'],data['TRAJS_VECS'],data['ORIG'],data['ROT'])
+                for argo_idx, pred_traj, pred_prob in zip(data['SEQ_ID'], restored_traj, post_out['prob_pred']):
+                    preds[argo_idx] = pred_traj.squeeze()
+                    x = pred_prob.squeeze().detach().cpu().numpy()
+                    probabilities[argo_idx] = x
+
+
+            elif date_set == 'av2':
+                data['TRAJS_CTRS'] = [x["TRAJS_CTRS"]  for x in data['TRAJS']]
+                data['TRAJS_VECS'] = [x["TRAJS_VECS"]  for x in data['TRAJS']]
+                restored_traj = restore_trajectories(post_out['traj_pred'],data['TRAJS_CTRS'],data['TRAJS_VECS'],data['ORIG'],data['ROT'])
+                for argo_idx, pred_traj, pred_prob in zip(data['SEQ_ID'], restored_traj, post_out['prob_pred']):
+
+                    seq_path = os.path.join(data_dir, argo_idx)
+                    scenario_path = Path(seq_path + f"/scenario_{argo_idx}.parquet")
+                    scenario = scenario_serialization.load_argoverse_scenario_parquet(scenario_path)
+                    track_id = scenario.focal_track_id
+
+                    pred_traj = pred_traj.squeeze()
+                    pred_prob = pred_prob.squeeze().detach().cpu().numpy()
+
+
+                    preds[argo_idx] = {track_id : (pred_traj, pred_prob)} # 
+        
                 # print(f"index {argo_idx} trajs shape: {preds[argo_idx].shape}")
                 # print(f"index {argo_idx} prob shape: {x.shape}")
                 # print(preds[argo_idx])
             # if i == 10:
             #     break
         print('\nTest set finish, cost {:.2f} secs'.format(time.time() - test_start))
-        
-    from argoverse.evaluation.competition_util import generate_forecasting_h5
-    file_path = 'results'
-    folder_name = os.path.basename(os.path.dirname(args.model_path))  # '20250618-083330'
-    file_stem = os.path.splitext(os.path.basename(args.model_path))[0]  # 'Simpl_ddp_best'
-    abs_path = os.path.join(file_path,folder_name, file_stem)
     
-    generate_forecasting_h5(preds, abs_path, probabilities=probabilities)
+    if date_set == 'av1':
+        from argoverse.evaluation.competition_util import generate_forecasting_h5
+        file_path = 'results'
+        folder_name = os.path.basename(os.path.dirname(args.model_path))  # '20250618-083330'
+        file_stem = os.path.splitext(os.path.basename(args.model_path))[0]  # 'Simpl_ddp_best'
+        abs_path = os.path.join(file_path,folder_name, file_stem)
+        
+        generate_forecasting_h5(preds, abs_path, probabilities=probabilities)
+    elif date_set == 'av2':
+        from av2.datasets.motion_forecasting.eval.submission import ChallengeSubmission
+                # 1. 构造 ChallengeSubmission 对象
+        submission = ChallengeSubmission(preds)
+
+        # 2. 保存为 parquet 文件（可提交）
+        submission.to_parquet(Path("submission_av2.parquet"))
     print('\nExit...')
 
 

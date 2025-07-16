@@ -1,10 +1,11 @@
 CUDA_VISIBLE_DEVICES=0 python train.py \
   --features_dir data_av2/features/ \
-  --train_batch_size 2 \
-  --val_batch_size 2 \
+  --train_batch_size 16 \
+  --val_batch_size 16 \
   --val_interval 2 \
-  --train_epoches 10 \
+  --train_epoches 50 \
   --data_aug \
   --use_cuda \
   --logger_writer \
-  --adv_cfg_path cfg.simpl_av2_cfg
+  --adv_cfg_path cfg.simpl_av2_cfg \
+  --experiment_name av2_Experiment 

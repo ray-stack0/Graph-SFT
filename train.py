@@ -210,7 +210,7 @@ def main():
                             model_name = '{}_best.tar'.format(net_name)
                             save_ckpt(net, optimizer, epoch, model_dir, model_name)
                             best_metric = val_eval_meter.metrics[rank_metric].avg
-                            print('Save the model: {}, {}: {:.4}, epoch: {}'.format(
+                            logger.print('Save the model: {}, {}: {:.4}, epoch: {}'.format(
                                 model_name, rank_metric, best_metric, epoch))
 
             if int(100 * epoch / args.train_epoches) in [20, 40, 60, 80]:

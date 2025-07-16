@@ -318,11 +318,10 @@ class LossFunc(nn.Module):
 
         with torch.no_grad():
             soft_label = F.softmax(-dist_sel / temperature, dim=1)  # 不再手动加 log，避免数值不稳定
-            traj_len = (last_idcs + 1).float()
-            len_weight = traj_len/traj_len.mean()  # [N]
+            # traj_len = (last_idcs + 1).float()
+            # len_weight = traj_len/traj_len.mean()  # [N]
 
         # 注意 F.kl_div 要求 logits_sel 已经是 log_softmax
         log_probs = F.log_softmax(logits_sel, dim=1)
-        kl_per_sample = F.kl_div(log_probs, soft_label, reduction='none').sum(dim=1)  # N
-        cls_loss = (kl_per_sample * len_weight).mean()
+        cls_loss = F.kl_div(log_probs, soft_label, reduction='batchmean')
         return cls_loss

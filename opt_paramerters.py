@@ -62,15 +62,17 @@ def objective(trial, args):
     logger.log_basics(args=args, datetime=date_str)
     loader = Loader(args, device, is_ddp=False, logger=logger )
     #* 设置优化参数
-    loader.adv_cfg.net_cfg['dropout'] = trial.suggest_float("dropout", 0.10, 0.35, step=0.05)
-    lr_peak = trial.suggest_float("lr", 5e-4, 1.5e-3, log=True)
-    loader.adv_cfg.opt_cfg['values'][1] = lr_peak
-    loader.adv_cfg.opt_cfg['values'][2] = lr_peak
+    # loader.adv_cfg.net_cfg['dropout'] = trial.suggest_float("dropout", 0.10, 0.35, step=0.05)
+    # lr_peak = trial.suggest_float("lr", 5e-4, 1.5e-3, log=True)
+    # loader.adv_cfg.opt_cfg['values'][1] = lr_peak
+    # loader.adv_cfg.opt_cfg['values'][2] = lr_peak
 
     # loader.adv_cfg.net_cfg['num_l2l_layer'] = trial.suggest_int("num_l2l_layer", 1, 3)
     # loader.adv_cfg.net_cfg['num_a2a_layer'] = trial.suggest_int("num_a2a_layer", 1, 3)
     # loader.adv_cfg.net_cfg['n_scene_layer'] = trial.suggest_int("n_scene_layer", 3, 6)
     # loader.adv_cfg.net_cfg['n_decoder_layer'] = trial.suggest_int("n_decoder_layer", 1, 3)
+    loader.adv_cfg.loss_cfg['exp_base_reg'] = trial.suggest_float("exp_base_reg", 0.6, 0.9, log = True)
+    loader.adv_cfg.loss_cfg['init_temperature_reg'] = trial.suggest_int("init_temperature_reg", 4, 10)
     
     adv_cfg = loader.adv_cfg.get_all_dict()
     args_dict = vars(args)
@@ -182,8 +184,8 @@ if __name__ == "__main__":
 
     optuna.logging.get_logger("optuna").addHandler(logging.StreamHandler(sys.stdout))
     os.makedirs("./opt", exist_ok=True)
-    storage_path = "sqlite:///opt/opt_lr_dropout.db"
-    study_name = "opt_lr_dropout"
+    storage_path = "sqlite:///opt/init_temperature_exp_reg.db"
+    study_name = "init_temperature_exp_reg"
     
     study = optuna.create_study(
         direction="minimize",
@@ -197,12 +199,12 @@ if __name__ == "__main__":
     args = parse_arguments()
     if args.is_main_thread:
         study.enqueue_trial({
-            "lr": 1e-3,
+            "exp_base_reg": 0.834,
             # "n_scene_layer": 4,
             # "num_l2l_layer": 2,
             # "num_a2a_layer": 2,
             # "n_decoder_layer": 3,
-            "dropout": 0.3
+            "init_temperature_reg": 8
         })
         
 
