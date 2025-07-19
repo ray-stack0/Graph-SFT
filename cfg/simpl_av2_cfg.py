@@ -35,7 +35,7 @@ class AdvCfg():
         self.net_cfg["n_scene_layer"] = 6
         self.net_cfg["n_scene_head"] = 8
         self.net_cfg['use_diff_mha'] = False
-        self.net_cfg["dropout"] = 0.3
+        self.net_cfg["dropout"] = 0.1
         self.net_cfg["update_edge"] = True
         self.net_cfg["use_nnconv"] = False  # 交互建模阶段是否采用NNConv
         self.net_cfg["use_fusion_gate"] = False
@@ -97,9 +97,9 @@ class AdvCfg():
             self.opt_cfg['step_size'] = 40
             self.opt_cfg['gamma'] = 0.1
         elif self.opt_cfg['scheduler'] == 'polyline':
-            self.opt_cfg['init_lr'] = 1e-4
-            self.opt_cfg['milestones'] = [0, 5, 35, 40]
-            self.opt_cfg['values'] = [1e-4, 1e-3, 1e-3, 1e-4]
+            self.opt_cfg['init_lr'] = 2e-4
+            self.opt_cfg['milestones'] = [0, 5, 25, 30, 35, 40]
+            self.opt_cfg['values'] = [2e-4, 2e-3, 2e-3, 1e-3, 1e-3, 1e-4]
 
         # * eval config
         self.eval_cfg = dict()

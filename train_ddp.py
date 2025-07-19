@@ -102,9 +102,8 @@ def main():
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
-                          num_workers=14,
-                          persistent_workers=True,
-                          prefetch_factor=4,
+                          num_workers=20,
+                          prefetch_factor=2,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           sampler=train_sampler,
@@ -114,8 +113,7 @@ def main():
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
                         num_workers=16,
-                        persistent_workers=True,
-                        prefetch_factor=4,
+                        prefetch_factor=2,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         sampler=val_sampler,
@@ -140,7 +138,7 @@ def main():
         for i, data in enumerate(tqdm(dl_train, disable=(not is_main) or args.no_pbar, ncols=80)):
             data_in = net.module.pre_process(data)
             out = net(data_in)
-            loss_out = loss_fn(out, data)
+            loss_out = loss_fn(out, data, epoch)
 
             post_out = net.module.post_process(out)
             eval_out = evaluator.evaluate(post_out, data)
@@ -181,7 +179,7 @@ def main():
                 for i, data in enumerate(tqdm(dl_val, disable=(not is_main) or args.no_pbar, ncols=80)):
                     data_in = net.module.pre_process(data)
                     out = net(data_in)
-                    loss_out = loss_fn(out, data)
+                    loss_out = loss_fn(out, data, epoch)
 
                     post_out = net.module.post_process(out)
                     eval_out = evaluator.evaluate(post_out, data)
