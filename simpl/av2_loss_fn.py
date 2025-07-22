@@ -132,26 +132,17 @@ class LossFunc(nn.Module):
         has_yaw = has_yaw[mask]
         last_idcs = last_idcs[mask]
 
-        _reg = reg[..., 0:2].clone()  # for WTA strategy
+        _reg = reg[..., 0:2].clone()  # for aWTA strategy
 
         row_idcs = torch.arange(len(last_idcs)).long().to(self.device)
-        dist = []
-        for j in range(num_modes):
-            dist.append(
-                torch.sqrt(
-                    (
-                        (_reg[row_idcs, j, last_idcs] - gt_preds[row_idcs, last_idcs])
-                        ** 2
-                    ).sum(1)
-                )
-            )
         #* fde
-        fde = torch.cat([x.unsqueeze(1) for x in fde], 1) #fde, fde
+        diff = _reg[:, :, last_idcs, :] - gt_preds[:, last_idcs, :].unsqueeze(1).expand(-1, num_modes, -1)
+        fde = torch.sqrt((diff ** 2).sum(dim=-1)) # {N_a,k}
         #* ade
         ade = compute_ade(reg, gt_preds, has_preds) # [N,K], ade
+        min_dist, min_idcs = fde.min(1)
         #* cls
         if not self.use_aWTA_cls:
-            min_dist, min_idcs = fde.min(1)
             # cls = F.softmax(cls,dim=1) # [N,K]
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
             mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
@@ -218,31 +209,19 @@ class LossFunc(nn.Module):
         has_preds = has_preds[mask]
         last_idcs = last_idcs[mask]
 
-        _reg = reg[..., 0:2].clone()  # for WTA strategy
-
+        _reg = reg[..., 0:2].clone() 
         row_idcs = torch.arange(len(last_idcs)).long().to(self.device)
-        dist = []
-        for j in range(num_modes):
-            dist.append(
-                torch.sqrt(
-                    (
-                        (_reg[row_idcs, j, last_idcs] - gt_preds[row_idcs, last_idcs])
-                        ** 2
-                    ).sum(1)
-                )
-            )
-        #* fde
-        fde = torch.cat([x.unsqueeze(1) for x in dist], 1)
+        #* fde N_a,30,2， 
+        diff = _reg[row_idcs, :, last_idcs, :] - gt_preds[row_idcs, last_idcs, :].unsqueeze(1).expand(-1, num_modes, -1)
+        fde = torch.sqrt((diff ** 2).sum(dim=-1)) # {N_a,k}
         #* ade
         ade = compute_ade(reg, gt_preds, has_preds) # [N,K], ade
+        min_dist, min_idcs = fde.min(1)
         #* cls
         if not self.use_aWTA_cls:
-            min_dist, min_idcs = dist.min(1)
-            row_idcs = torch.arange(len(min_idcs)).long().to(self.device)
-
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
             mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
-            mask1 = dist - min_dist.view(-1, 1) > self.config["cls_ignore"]
+            mask1 = fde - min_dist.view(-1, 1) > self.config["cls_ignore"]
             mgn = mgn[mask0 * mask1]
             mask = mgn < self.config["mgn"]
             num_cls = mask.sum().item()

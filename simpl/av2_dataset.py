@@ -25,7 +25,7 @@ class AV2Dataset(Dataset):
         self.mode = mode
         self.aug = aug
         self.verbose = verbose
-        self.l2a_dist_th = 50
+        self.l2a_dist_th = 30
 
         self.dataset_files = []
         self.dataset_len = -1
@@ -324,10 +324,10 @@ class AV2Dataset(Dataset):
         return data
 
     def actor_gather(self, batch_size, trajs):
-        num_actors = [len(x['TRAJS_CTRS']) for x in trajs]
-        # print('num_actors: ', num_actors)
 
         act_feats = []
+        count = 0
+        actor_idcs = []
         for i in range(batch_size):
             traj_pos = trajs[i]['TRAJS_POS_OBS']
             traj_disp = torch.zeros_like(traj_pos)
@@ -341,16 +341,14 @@ class AV2Dataset(Dataset):
             # print('act_feat: ', act_feat.shape)  # [N_a, 50, 14]
             act_feats.append(act_feat)
 
+            idcs = torch.arange(count, count + len(trajs[i]['TRAJS_CTRS']))
+            actor_idcs.append(idcs)
+            count += len(trajs[i]['TRAJS_CTRS'])
+
         act_feats = [x.transpose(1, 2) for x in act_feats]
         actors = torch.cat(act_feats, 0)  # [N_a, feat_len, 50], N_a is agent number in a batch
         actors = actors[..., 2:]  # todo: ! tmp solution
-        actor_idcs = []  # e.g. [tensor([0, 1, 2, 3]), tensor([ 4,  5,  6,  7,  8,  9, 10])]
-        count = 0
-        for i in range(batch_size):
-            idcs = torch.arange(count, count + num_actors[i])
-            actor_idcs.append(idcs)
-            count += num_actors[i]
-        # print('actor_idcs: ', actor_idcs)
+        
         return actors, actor_idcs
 
     def graph_gather(self, batch_size, graphs):

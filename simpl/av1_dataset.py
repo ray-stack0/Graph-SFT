@@ -34,8 +34,7 @@ class ArgoDataset(Dataset):
         self.pred_len = pred_len
         self.seq_len = obs_len + pred_len
 
-        self.use_gnn_fusion = True
-        self.l2a_dist_th = 50
+        self.l2a_dist_th = 30
 
         if self.verbose:
             print('[Dataset] Dataset Info:')
@@ -121,10 +120,7 @@ class ArgoDataset(Dataset):
         # ~ calc rpe
         scene_ctrs = torch.cat([torch.from_numpy(trajs_ctrs), torch.from_numpy(lane_ctrs)], dim=0) # [N,2]
         scene_vecs = torch.cat([torch.from_numpy(trajs_vecs), torch.from_numpy(lane_vecs)], dim=0)
-        if self.use_gnn_fusion:
-            rpes = self._get_rpe(scene_ctrs, scene_vecs, trajs_ctrs.shape[0], graph)
-        else:
-            rpes = self._get_rpe(scene_ctrs, scene_vecs)
+        rpes = self._get_rpe(scene_ctrs, scene_vecs, trajs_ctrs.shape[0], graph)
 
         data = {}
         data['SEQ_ID'] = seq_id
@@ -170,114 +166,79 @@ class ArgoDataset(Dataset):
         return sin_dang
 
     def _get_rpe(self, ctrs, vecs, num_actor = None, lane_graph = None, radius=100.0):
-        if self.use_gnn_fusion:
-            diff = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
-            d_pos = diff.norm(dim=-1)
-            pos_rpe = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
+        diff = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
+        d_pos = diff.norm(dim=-1)
+        pos_rpe = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
 
-            # angle diff
-            cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
-            sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
-            cos_a2 = self._get_cos(vecs.unsqueeze(0), diff)
-            sin_a2 = self._get_sin(vecs.unsqueeze(0), diff)
+        # angle diff
+        cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
+        sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
+        cos_a2 = self._get_cos(vecs.unsqueeze(0), diff)
+        sin_a2 = self._get_sin(vecs.unsqueeze(0), diff)
 
-            rpes = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2, pos_rpe], dim=-1) # [N,N,5]
+        rpes = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2, pos_rpe], dim=-1) # [N,N,5]
 
-            
-            dist_mask = pos_rpe < (2 * self.l2a_dist_th / radius)
-            src, tgt = dist_mask.nonzero(as_tuple=True)
-            is_lane_src = src >= num_actor
-            is_lane_tgt = tgt >= num_actor
-            lane_lane_mask = ~(is_lane_src & is_lane_tgt)  # 只保留非 lane↔lane 的边
-            l2a_edges = torch.stack([src[lane_lane_mask], tgt[lane_lane_mask]], dim=0).to(torch.int64) # [2,num_edges]
+        
+        dist_mask = pos_rpe < (2 * self.l2a_dist_th / radius)
+        src, tgt = dist_mask.nonzero(as_tuple=True)
+        is_lane_src = src >= num_actor
+        is_lane_tgt = tgt >= num_actor
+        lane_lane_mask = ~(is_lane_src & is_lane_tgt)  # 只保留非 lane↔lane 的边
+        l2a_edges = torch.stack([src[lane_lane_mask], tgt[lane_lane_mask]], dim=0).to(torch.int64) # [2,num_edges]
 
-            #* a2a
-            a2a_edges = l2a_edges[:, (l2a_edges[0] < num_actor) & (l2a_edges[1] < num_actor)]
-            a2a_edge_type = torch.zeros(a2a_edges.shape[1],dtype=torch.long)
-            _,a2a_rpes, a2a_onehot = self.concat_rpe_with_type_encoding_torch(rpes, a2a_edges, a2a_edge_type)
+        #* a2a
+        a2a_edges = l2a_edges[:, (l2a_edges[0] < num_actor) & (l2a_edges[1] < num_actor)]
+        a2a_edge_type = torch.zeros(a2a_edges.shape[1],dtype=torch.long)
+        _,a2a_rpes, a2a_onehot = self.concat_rpe_with_type_encoding_torch(rpes, a2a_edges, a2a_edge_type)
 
-            #* a2l, l2a
-            a2lo_edges = l2a_edges[:, (l2a_edges[0] < num_actor) & (l2a_edges[1] >= num_actor)]
-            l2ao_edges = l2a_edges[:, (l2a_edges[0] >= num_actor) & (l2a_edges[1] < num_actor)]
-            a2l_l2a_edges = torch.cat([a2lo_edges, l2ao_edges], dim=-1)
-            a2l_l2a_types = torch.zeros(a2l_l2a_edges.shape[1],dtype=torch.long)
-            a2l_l2a_types[:a2lo_edges.shape[1]] = 1
-            a2l_l2a_types[a2lo_edges.shape[1]:] = 2
-            _, a2l_l2a_rpes, a2l_l2a_onehot = self.concat_rpe_with_type_encoding_torch(rpes,a2l_l2a_edges, a2l_l2a_types)
-
+        #* a2l, l2a
+        a2lo_edges = l2a_edges[:, (l2a_edges[0] < num_actor) & (l2a_edges[1] >= num_actor)]
+        l2ao_edges = l2a_edges[:, (l2a_edges[0] >= num_actor) & (l2a_edges[1] < num_actor)]
+        a2l_l2a_edges = torch.cat([a2lo_edges, l2ao_edges], dim=-1)
+        a2l_l2a_types = torch.zeros(a2l_l2a_edges.shape[1],dtype=torch.long)
+        a2l_l2a_types[:a2lo_edges.shape[1]] = 1
+        a2l_l2a_types[a2lo_edges.shape[1]:] = 2
+        _, a2l_l2a_rpes, a2l_l2a_onehot = self.concat_rpe_with_type_encoding_torch(rpes,a2l_l2a_edges, a2l_l2a_types)
 
 
-            #* l2l 
-            # 自环边特征: [1., 0., 0., 0., 0., 0., 0., 0., 0.]
-            pre_pairs = torch.as_tensor(lane_graph['pre_pairs'], dtype= torch.int64)
-            suc_pairs = torch.as_tensor(lane_graph['suc_pairs'], dtype= torch.int64)
-            left_pairs = torch.as_tensor(lane_graph['left_pairs'], dtype= torch.int64)
-            right_pairs = torch.as_tensor(lane_graph['right_pairs'], dtype= torch.int64)  # [2, num_edges]
 
-            self_loop_nodes = torch.arange(0, (ctrs.shape[0] - num_actor))
-            self_paris = torch.stack([self_loop_nodes, self_loop_nodes], dim=0)  # shape: [2, num_self_loops]
+        #* l2l 
+        # 自环边特征: [1., 0., 0., 0., 0., 0., 0., 0., 0.]
+        pre_pairs = torch.as_tensor(lane_graph['pre_pairs'], dtype= torch.int64)
+        suc_pairs = torch.as_tensor(lane_graph['suc_pairs'], dtype= torch.int64)
+        left_pairs = torch.as_tensor(lane_graph['left_pairs'], dtype= torch.int64)
+        right_pairs = torch.as_tensor(lane_graph['right_pairs'], dtype= torch.int64)  # [2, num_edges]
 
-            l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs, self_paris], dim=1)
-            # l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs], dim=1)
-            edge_type = torch.cat([
-                torch.full((pre_pairs.shape[1],), 3, dtype=torch.long),
-                torch.full((suc_pairs.shape[1],), 4, dtype=torch.long),
-                torch.full((left_pairs.shape[1],), 5, dtype=torch.long),
-                torch.full((right_pairs.shape[1],), 6, dtype=torch.long),
-                torch.full((self_paris.shape[1],), 7,dtype=torch.long)
-            ], dim=0)
+        self_loop_nodes = torch.arange(0, (ctrs.shape[0] - num_actor))
+        self_paris = torch.stack([self_loop_nodes, self_loop_nodes], dim=0)  # shape: [2, num_self_loops]
 
-            _, l2l_rpes, l2l_onehot = self.concat_rpe_with_type_encoding_torch(rpes, l2l_edges + num_actor, edge_type) # [2, num_l2l_edges]
+        l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs, self_paris], dim=1)
+        # l2l_edges = torch.cat([pre_pairs, suc_pairs, left_pairs, right_pairs], dim=1)
+        edge_type = torch.cat([
+            torch.full((pre_pairs.shape[1],), 3, dtype=torch.long),
+            torch.full((suc_pairs.shape[1],), 4, dtype=torch.long),
+            torch.full((left_pairs.shape[1],), 5, dtype=torch.long),
+            torch.full((right_pairs.shape[1],), 6, dtype=torch.long),
+            torch.full((self_paris.shape[1],), 7,dtype=torch.long)
+        ], dim=0)
 
-            rpes_dict = dict()
-            rpes_dict['a2a_edges'] = a2a_edges          # 
-            rpes_dict['a2a_rpes'] = a2a_rpes            # 
-            rpes_dict['a2a_onehot'] = a2a_onehot        # 
+        _, l2l_rpes, l2l_onehot = self.concat_rpe_with_type_encoding_torch(rpes, l2l_edges + num_actor, edge_type) # [2, num_l2l_edges]
 
-            rpes_dict['a2l_l2a_edges'] = a2l_l2a_edges  # 
-            rpes_dict['a2l_l2a_rpes'] = a2l_l2a_rpes    # 
-            rpes_dict['a2l_l2a_onehot'] = a2l_l2a_onehot# 
-            
-            rpes_dict['l2l_edges'] = l2l_edges          # 并不是组成token时的索引
-            rpes_dict['l2l_rpes'] = l2l_rpes
-            rpes_dict['l2l_onehot'] = l2l_onehot
+        rpes_dict = dict()
+        rpes_dict['a2a_edges'] = a2a_edges          # 
+        rpes_dict['a2a_rpes'] = a2a_rpes            # 
+        rpes_dict['a2a_onehot'] = a2a_onehot        # 
 
-            return  rpes_dict
+        rpes_dict['a2l_l2a_edges'] = a2l_l2a_edges  # 
+        rpes_dict['a2l_l2a_rpes'] = a2l_l2a_rpes    # 
+        rpes_dict['a2l_l2a_onehot'] = a2l_l2a_onehot# 
+        
+        rpes_dict['l2l_edges'] = l2l_edges          # 并不是组成token时的索引
+        rpes_dict['l2l_rpes'] = l2l_rpes
+        rpes_dict['l2l_onehot'] = l2l_onehot
 
-        else:
-            # distance encoding
-            d_pos = (ctrs.unsqueeze(0) - ctrs.unsqueeze(1)).norm(dim=-1)
-            # if False:
-            #     mask = d_pos >= radius
-            #     d_pos = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
-            #     pos_rpe = []
-            #     for l_pos in range(10):
-            #         pos_rpe.append(torch.sin(2**l_pos * math.pi * d_pos))
-            #         pos_rpe.append(torch.cos(2**l_pos * math.pi * d_pos))
-            #     # print('pos rpe: ', [x.shape for x in pos_rpe])
-            #     pos_rpe = torch.stack(pos_rpe)
-            #     # print('pos_rpe: ', pos_rpe.shape)
-            # else:
-            mask = None
-            d_pos = d_pos * 2 / radius  # scale [0, radius] to [0, 2]
-            pos_rpe = d_pos.unsqueeze(0)
+        return  rpes_dict
 
-            # angle diff
-            cos_a1 = self._get_cos(vecs.unsqueeze(0), vecs.unsqueeze(1))
-            sin_a1 = self._get_sin(vecs.unsqueeze(0), vecs.unsqueeze(1))
-            # print('cos_a1: ', cos_a1.shape, 'sin_a1: ', sin_a1.shape)
-
-            v_pos = ctrs.unsqueeze(0) - ctrs.unsqueeze(1)
-            cos_a2 = self._get_cos(vecs.unsqueeze(0), v_pos)
-            sin_a2 = self._get_sin(vecs.unsqueeze(0), v_pos)
-            # print('cos_a2: ', cos_a2.shape, 'sin_a2: ', sin_a2.shape)
-
-            ang_rpe = torch.stack([cos_a1, sin_a1, cos_a2, sin_a2])
-            rpe = torch.cat([ang_rpe, pos_rpe], dim=0)
-            rpes_dict = dict()
-            rpes_dict['scene'] = rpe    # [5, N, N]
-            rpes_dict['scene_mask'] = mask
-            return rpes_dict
 
     def concat_rpe_with_type_encoding_torch(self, rpe_matrix, edge_index, edge_type=None, num_edge_types=7):
         """
@@ -334,9 +295,8 @@ class ArgoDataset(Dataset):
 
         actors, actor_idcs = self.actor_gather(data['BATCH_SIZE'], data['TRAJS_OBS'], data['PAD_OBS'])
         lanes, lane_idcs, nodes_of_lane, node_edge_index = self.graph_gather(data['BATCH_SIZE'], data["LANE_GRAPH"])
-        if self.use_gnn_fusion:
-            rpes = self.rpe_gather(data['RPE'], lane_idcs, actor_idcs)
-            data['RPE'] = rpes
+        rpes = self.rpe_gather(data['RPE'], lane_idcs, actor_idcs)
+        data['RPE'] = rpes
 
         data['ACTORS'] = actors
         data['ACTOR_IDCS'] = actor_idcs
@@ -463,11 +423,6 @@ class ArgoDataset(Dataset):
 
         return lanes, lane_idcs, graph['nodes_of_lane'], graph['node_edge_index']
 
-    # def rpe_gather(self, rpes):
-    #     rpe = dict()
-    #     for key in list(rpes[0].keys()):
-    #         rpe[key] = [x[key] for x in rpes]
-    #     return rpe
 
     def data_augmentation(self, df):
         '''

@@ -166,23 +166,15 @@ class LossFunc(nn.Module):
         _reg = reg[..., 0:2].clone()  # for WTA strategy, in case of (5-dim) prob output
 
         row_idcs = torch.arange(len(last_idcs)).long().to(self.device)
-        fde = []
-        for j in range(num_modes):
-            fde.append(
-                torch.sqrt(
-                    (
-                        (_reg[row_idcs, j, last_idcs] - gt_preds[row_idcs, last_idcs])
-                        ** 2
-                    ).sum(1)
-                )
-            )
         #* fde
-        fde = torch.cat([x.unsqueeze(1) for x in fde], 1) #fde, fde
+        diff = _reg[:, :, last_idcs, :] - gt_preds[:, last_idcs, :].unsqueeze(1).expand(-1, num_modes, -1)
+        fde = torch.sqrt((diff ** 2).sum(dim=-1)) # {N_a,k}
+        min_dist, min_idcs = fde.min(1)
+
         #* ade
         ade = compute_ade(reg, gt_preds, has_preds) # [N,K], ade
         #* cls
         if not self.use_aWTA_cls:
-            min_dist, min_idcs = fde.min(1)
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
             mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
             mask1 = fde - min_dist.view(-1, 1) > self.config["cls_ignore"]

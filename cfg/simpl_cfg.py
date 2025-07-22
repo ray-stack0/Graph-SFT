@@ -27,19 +27,13 @@ class AdvCfg():
         self.net_cfg["edge_type_d"] = 5
         self.net_cfg["rpe_type_d"] = 5 + self.net_cfg["edge_type_d"]
         
-
-        self.net_cfg["token_fuse_mode"] = 'res' # 'weighted_sum'/concat_mlp'/'attn'/'last'/res
         self.net_cfg["d_rpe_in"] = 12
         self.net_cfg["d_rpe"] = 128
         self.net_cfg["d_embed"] = 128
         self.net_cfg["n_scene_layer"] = 4
         self.net_cfg["n_scene_head"] = 8
-        self.net_cfg['use_diff_mha'] = False
-        self.net_cfg["dropout"] = 0.3
+        self.net_cfg["dropout"] = 0.1
         self.net_cfg["update_edge"] = True
-        self.net_cfg["use_nnconv"] = False  # 交互建模阶段是否采用NNConv
-        self.net_cfg["use_fusion_gate"] = False
-        self.net_cfg["use_SwiGLU_fnn"] = False
 
         self.net_cfg["decoder_type"] = "GlobalQueryRefine"
         self.net_cfg["d_pos"] = 4  # 位置编码的维度
@@ -66,12 +60,12 @@ class AdvCfg():
         self.loss_cfg["use_aWTA"] = True
         self.loss_cfg["use_aWTA_cls"] = True
         if self.loss_cfg["use_aWTA_cls"]:
-            self.loss_cfg["exp_base_cls"] = 0.834
-            self.loss_cfg["init_temperature_cls"] = 8
+            self.loss_cfg["exp_base_cls"] = 0.83
+            self.loss_cfg["init_temperature_cls"] = 10
             self.loss_cfg["cls_mode"] = "ade_kl" # ade_kl/fde_kl
         if self.loss_cfg['use_aWTA']:
-            self.loss_cfg["exp_base_reg"] = 0.834
-            self.loss_cfg["init_temperature_reg"] = 8
+            self.loss_cfg["exp_base_reg"] = 0.83
+            self.loss_cfg["init_temperature_reg"] = 10
 
         #* opt cfg
         self.opt_cfg = dict()
@@ -97,8 +91,8 @@ class AdvCfg():
             self.opt_cfg['gamma'] = 0.1
         elif self.opt_cfg['scheduler'] == 'polyline':
             self.opt_cfg['init_lr'] = 1e-4
-            self.opt_cfg['milestones'] = [0, 5, 25, 30, 40, 45]
-            self.opt_cfg['values'] = [1e-4, 1e-3, 1e-3, 5e-4, 5e-4, 1e-4]
+            self.opt_cfg['milestones'] = [0, 5, 35, 40]
+            self.opt_cfg['values'] = [1e-4, 5e-4, 5e-4, 1e-4]
 
         
         #* eval cfg

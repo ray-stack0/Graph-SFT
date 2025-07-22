@@ -203,13 +203,9 @@ class ActorNet(nn.Module):
 
         actors = self.output(out)[:, :, -1]
 
-        if self.num_layers == 0:
-            return actors
 
         a2a_attr = self.proj_a2a_rpes(rpes['a2a_fused_rpes'])
 
-        assert rpes['a2a_edges'].shape[1] == a2a_attr.shape[0], \
-            f"边数不匹配:edges {rpes['a2a_edges'].shape[1]}, attr {a2a_attr.shape[0]}"
         
         for layer in self.a2a:
             actors, a2a_attr = layer(actors, rpes['a2a_edges'], a2a_attr)
@@ -309,9 +305,7 @@ class EdgeAwareGATLayer(MessagePassing):
                  d_ffn: int = 512,
                  heads: int = 8,
                  dropout: float = 0.1,
-                 update_edge: bool = True,
-                 use_fusion_gate: bool = False,
-                 use_SwiGLU_fnn: bool = False):
+                 update_edge: bool = True):
         super(EdgeAwareGATLayer, self).__init__(aggr='add',node_dim=0)  # aggregate messages by sum
         self.d_model = d_model
         self.d_edge = d_edge
@@ -319,8 +313,6 @@ class EdgeAwareGATLayer(MessagePassing):
         self.d_head = d_model // heads
         self.update_edge = update_edge
         self.dropout = nn.Dropout(dropout)
-        self.use_fusion_gate = use_fusion_gate
-        self.use_SwiGLU_fnn = use_SwiGLU_fnn
         # self.head_mixer = nn.Conv1d(self.heads, self.heads, kernel_size=1, bias=False)
         # Project to memory (attention input): f(x_i, x_j, e_ij) -> d_model
         self.memory_proj = nn.Sequential(
@@ -333,11 +325,8 @@ class EdgeAwareGATLayer(MessagePassing):
         self.att_q = nn.Linear(d_model, d_model, bias=False)
         self.att_k = nn.Linear(d_model, d_model, bias=False)
         self.att_v = nn.Linear(d_model, d_model, bias=False)
-        if self.use_fusion_gate:
-            self.to_s = nn.Linear(d_model, d_model)
-            self.to_g = nn.Linear(2 * d_model, d_model)
-        else:
-            self.att_o = nn.Linear(d_model, d_model, bias=False)
+
+        self.att_o = nn.Linear(d_model, d_model, bias=False)
         self.edge_bias_proj = nn.Linear(d_model,self.heads)
         # Edge update block
         if update_edge:
@@ -349,16 +338,14 @@ class EdgeAwareGATLayer(MessagePassing):
             self.edge_norm = nn.LayerNorm(d_edge)
 
         # Feed-forward network
-        if use_SwiGLU_fnn:
-            self.ffn = SwiGLU(d_model, d_ffn, dropout=dropout)
-        else:
-            self.ffn = nn.Sequential(
-                nn.Linear(d_model, d_ffn),
-                nn.ReLU(inplace=True),
-                nn.Dropout(dropout),
-                nn.Linear(d_ffn, d_model),
-                nn.Dropout(dropout)
-            )
+
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ffn),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(d_ffn, d_model),
+            nn.Dropout(dropout)
+        )
         
         # Normalizations
         self.norm1 = nn.LayerNorm(d_model)
@@ -400,10 +387,8 @@ class EdgeAwareGATLayer(MessagePassing):
         out = attn.unsqueeze(-1) * v  # [E, H, d_h]
         # out = self.head_mixer(out)
         out = out.view(-1, self.d_model)  # [E, d_model]
-        if self.use_fusion_gate or self.use_SwiGLU_fnn:
-            return out
-        else:
-            return self.att_o(out)
+
+        return self.att_o(out)
     
     def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
         '''
@@ -417,168 +402,8 @@ class EdgeAwareGATLayer(MessagePassing):
         x = self.norm2(x + self.ffn(x))
         return x, updated_edge_attr
 
-    def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
-        if self.use_fusion_gate:
-            g = torch.sigmoid(self.to_g(torch.cat([aggr_out, x], dim=-1)))
-            return aggr_out + g * (self.to_s(x) - aggr_out)
-        else:
-            return self.dropout(aggr_out)  # [N, d_model]
-
-
-
-    # def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
-    #     '''
-    #     x:          [N, d_model] node features
-    #     edge_index: [2, E]       edges (source, target)
-    #     edge_attr:  [E, d_edge]  edge features
-    #     '''
-
-    #     out, updated_edge_attr = self.propagate_with_edge(edge_index, x, edge_attr)
-    #     x = self.norm1(x + out)
-    #     x = self.norm2(x + self.ffn(x))
-    #     return x, updated_edge_attr
-
-    # def propagate_with_edge(self, edge_index, x, edge_attr):
-    #     self._temp_updated_edge_attr = None  # 安全清除
-    #     out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
-    #     updated_edge_attr = self._temp_updated_edge_attr if self._temp_updated_edge_attr is not None else edge_attr
-    #     return out, updated_edge_attr
-
-    # def message(self, x_j: Tensor, x_i: Tensor, edge_attr: Tensor, edge_index: Tensor, edge_index_i) -> Tensor:
-    #     '''
-    #     x_i: [E, d_model] receiver node features, edge index[1]
-    #     x_j: [E, d_model] sender node features, edge_index[0]
-    #     edge_attr: [E, d_edge] edge features
-    #     '''
-    #     # memory = f(x_i, x_j, e_ij)
-    #     mem = self.memory_proj(torch.cat([x_i, x_j, edge_attr], dim=-1))  # [E, d_model]
-
-    #     # optional edge update
-    #     if self.update_edge:
-    #         delta_edge = self.edge_update_block(mem)  # [E, d_edge]
-    #         self._temp_updated_edge_attr = self.edge_norm(edge_attr + delta_edge)
-
-    #     # attention heads
-    #     q = self.att_q(x_i).view(-1, self.heads, self.d_head)  # [E, H, d_h]
-    #     k = self.att_k(mem).view(-1, self.heads, self.d_head)
-    #     v = self.att_v(mem).view(-1, self.heads, self.d_head)
-
-    #     # attention scores
-    #     attn_logits = (q * k).sum(dim=-1) / (self.d_head ** 0.5)  # [E, H]
-
-    #     # local softmax per target node
-    #     attn = pyg_softmax(attn_logits, index=edge_index[1])  # [E, H]
-
-    #     # weighted message
-    #     out = attn.unsqueeze(-1) * v  # [E, H, d_h]
-    #     out = out.view(-1, self.d_model)  # [E, d_model]
-
-    #     return self.att_o(out)
-
-    
-
-class GAT_RPE_L2L_Encoder(nn.Module):
-    def __init__(
-            self,
-            d_lane_in = 10,
-            d_rpe_in = 8,
-            d_model = 128,
-            num_head = 8,
-            num_layers = 3,
-            dropout = 0.1,
-            need_edge_attr = False,
-            use_gcn = False):
-        super(GAT_RPE_L2L_Encoder, self).__init__()
-        self.need_edge_attr = need_edge_attr
-        self.use_gcn = use_gcn
-        self.node_input_proj = nn.Sequential(
-            nn.Linear(d_lane_in, d_model),
-            nn.LayerNorm(d_model),
-            nn.ReLU(inplace=True)
-        )
-        self.rpe_proj = nn.Sequential(
-            nn.Linear(d_rpe_in, d_model),
-            nn.LayerNorm(d_model),
-            nn.ReLU(inplace=True))
-
-        self.l2l = nn.ModuleList(
-            EdgeAwareGATLayer(d_model = d_model, d_edge=d_model,
-                              heads=num_head, dropout=dropout, d_ffn=2*d_model)
-                              for _ in range(num_layers)
-        )
-    def forward(self, lane_feats, edge_indexs, edge_attrs):
-        edge_attrs = self.rpe_proj(edge_attrs)
-        for mod in self.l2l:
-            lane_feats, edge_attrs = mod(lane_feats, edge_indexs, edge_attrs)
-        if self.need_edge_attr:
-            return lane_feats, edge_attrs
-        else:
-            return lane_feats
-
-class LaneGraphConvLayerShared(nn.Module):
-    def __init__(self, d_model: int, edge_mlp: nn.Module, dropout=0.1):
-        super().__init__()
-        self.nnconv = NNConv(d_model, d_model, nn=edge_mlp, aggr='add')
-        self.lin_res = nn.Linear(d_model, d_model)   
-        self.norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, x, edge_index, edge_attr):
-        x_res = self.lin_res(x)  # 显式的 Θ x_i
-        x = self.nnconv(x, edge_index, edge_attr)
-        x = self.norm(x + self.dropout(x_res))
-        return x
-
-    
-class StackedLaneGraphConvShared(nn.Module):
-    def __init__(self,
-                 d_model: int,
-                 d_edge_in: int,
-                 num_layers: int = 3,
-                 dropout: float = 0.1,
-                 fusion: str = 'concat'):
-        super().__init__()
-        self.shared_edge_mlp = nn.Sequential(
-            nn.Linear(d_edge_in, d_model * d_model),
-            nn.LayerNorm(d_model * d_model),
-            nn.ReLU(inplace=True)
-        )
-        self.layers = nn.ModuleList([
-            LaneGraphConvLayerShared(d_model, self.shared_edge_mlp, dropout)
-            for _ in range(num_layers)
-        ])
-        self.fusion = fusion
-        if fusion == 'concat':
-            self.fusion_proj = nn.Sequential(
-                nn.Linear(num_layers * d_model, d_model),
-                nn.LayerNorm(d_model),
-                nn.ReLU(inplace=True)
-            )
-        elif fusion == 'weighted':
-            self.fusion_weights = nn.Parameter(torch.ones(num_layers))
-
-
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor):
-        outputs = []
-        for layer in self.layers:
-            x = layer(x, edge_index, edge_attr)
-            outputs.append(x)
-        
-        if self.fusion == 'concat':
-            x_fused = torch.cat(outputs, dim=-1)
-            x_fused = self.fusion_proj(x_fused)
-
-        elif self.fusion == 'mean':
-            x_fused = torch.stack(outputs, dim=0).mean(dim=0)
-
-        elif self.fusion == 'weighted':
-            weights = torch.softmax(self.fusion_weights, dim=0)  # [L]
-            x_fused = sum(w * out for w, out in zip(weights, outputs))
-
-        else:
-            raise ValueError(f"Unknown fusion method: {self.fusion}")
-
-        return x_fused, None
+    def update(self, aggr_out: Tensor) -> Tensor:
+        return self.dropout(aggr_out)  # [N, d_model]
 
 
 class Point_RPE_MAP_Encoder(nn.Module):
@@ -623,7 +448,6 @@ class Point_RPE_MAP_Encoder(nn.Module):
                               heads=8, dropout=dropout, d_ffn=2*d_model)
                               for _ in range(num_layers)
         )
-        # self.l2l = StackedLaneGraphConvShared(d_model=d_model,d_edge_in=9,num_layers=num_layers,dropout=dropout)
 
     def forward(self, node_feats,  nodes_of_lanes, rpes):
         # out: {N_lane, d_model}
@@ -651,211 +475,7 @@ class Point_RPE_MAP_Encoder(nn.Module):
         return lane_features, l2l_attr
 
 
-
-
-class PointAggregateBlock(nn.Module):
-    def __init__(self, hidden_size: int, aggre_out: bool, dropout: float = 0.1) -> None:
-        super(PointAggregateBlock, self).__init__()
-        self.aggre_out = aggre_out
-
-        self.fc1 = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True)
-        )
-        self.fc2 = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True)
-        )
-        self.norm = nn.LayerNorm(hidden_size)
-
-    def _global_maxpool_aggre(self, feat):
-        return F.adaptive_max_pool1d(feat.permute(0, 2, 1), 1).permute(0, 2, 1)
-
-    def forward(self, x_inp):
-        x = self.fc1(x_inp)  # [N_{lane}, 10, hidden_size]
-        x_aggre = self._global_maxpool_aggre(x)
-        x_aggre = torch.cat([x, x_aggre.repeat([1, x.shape[1], 1])], dim=-1)
-
-        out = self.norm(x_inp + self.fc2(x_aggre))
-        if self.aggre_out:
-            return self._global_maxpool_aggre(out).squeeze()
-        else:
-            return out
-
-
-class LaneNet(nn.Module):
-    def __init__(self, device, in_size=10, hidden_size=128, dropout=0.1):
-        super(LaneNet, self).__init__()
-        self.device = device
-
-        self.proj = nn.Sequential(
-            nn.Linear(in_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(inplace=True)
-        )
-        self.aggre1 = PointAggregateBlock(hidden_size=hidden_size, aggre_out=False, dropout=dropout)
-        self.aggre2 = PointAggregateBlock(hidden_size=hidden_size, aggre_out=True, dropout=dropout)
-
-    def forward(self, feats):
-        x = self.proj(feats)  # [N_{lane}, 10, hidden_size]
-        x = self.aggre1(x)
-        x = self.aggre2(x)  # [N_{lane}, hidden_size]
-        return x
-
-
-
 #* 3. Fusion
-
-def lambda_init_fn(depth: int) -> float:
-    # 你的 lambda 初始化函数示例
-    return 0.8 - 0.6 * math.exp(-0.3 * depth)
-
-
-class EdgeAwareGATLayerWithDiffAttn(MessagePassing):
-    def __init__(
-            self,
-            d_model: int = 128,
-            d_edge: int = 128,
-            d_ffn: int = 256,
-            heads: int = 8,
-            dropout: float = 0.1,
-            update_edge: bool = True,
-            depth: int = 0,  # 当前层索引（用于 lambda 初始化）
-    ):
-        super().__init__(aggr='add')  # 聚合方式为求和
-        self.d_model = d_model
-        self.d_edge = d_edge
-        self.heads = int(heads)
-        self.d_head = int(d_model // self.heads // 2)  # 每个差分注意力头一半维度
-        self.dropout = nn.Dropout(dropout)
-        self.update_edge = update_edge
-
-        # 用于融合节点特征与边特征的投影模块
-        self.memory_proj = nn.Sequential(
-            nn.Linear(2 * d_model + d_edge, d_model),
-            nn.LayerNorm(d_model),
-            nn.ReLU(inplace=True)
-        )
-
-        # 差分多头注意力的q,k,v和输出线性层
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
-
-        # 差分注意力权重相关参数
-        self.lambda_init = lambda_init_fn(depth)
-        self.lambda_q1 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_k1 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_q2 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.lambda_k2 = nn.Parameter(torch.zeros(self.d_head, dtype=torch.float32).normal_(mean=0, std=0.1))
-        self.subln = nn.LayerNorm(2 * self.d_head * self.heads)
-
-        # 边特征更新模块
-        if update_edge:
-            self.edge_update_block = nn.Sequential(
-                nn.Linear(d_model, d_edge),
-                nn.LayerNorm(d_edge),
-                nn.ReLU(inplace=True)
-            )
-            self.edge_norm = nn.LayerNorm(d_edge)
-
-        # FFN 与归一化层
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_ffn),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(d_ffn, d_model),
-            nn.Dropout(dropout)
-        )
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-
-    def forward(
-            self,
-            x: torch.Tensor,
-            edge_index: torch.Tensor,
-            edge_attr: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            x: 节点特征, [num_nodes, d_model]
-            edge_index: 边索引, [2, num_edges]
-            edge_attr: 边特征, [num_edges, d_edge]
-
-        Returns:
-            updated node features, updated edge features (如果update_edge为True，否则返回原edge_attr)
-        """
-        out, updated_edge_attr = self.propagate_with_edge(edge_index, x, edge_attr)
-        x = self.norm1(x + out)
-        x = self.norm2(x + self.ffn(x))
-        return x, updated_edge_attr
-
-    def propagate_with_edge(self, edge_index, x, edge_attr):
-        self._temp_updated_edge_attr = None  # 安全清除
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
-        updated_edge_attr = self._temp_updated_edge_attr if self._temp_updated_edge_attr is not None else edge_attr
-        return out, updated_edge_attr
-
-    def message(
-            self,
-            x_i: torch.Tensor,
-            x_j: torch.Tensor,
-            edge_attr: torch.Tensor,
-            edge_index: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        message传入的是对应边的源节点x_j、目标节点x_i和边特征edge_attr
-        """
-
-        # 融合消息
-        mem = self.memory_proj(torch.cat([x_i, x_j, edge_attr], dim=-1))
-
-        # 边特征更新（累积）
-        if self.update_edge:
-            delta_edge = self.edge_update_block(mem)  # [E, d_edge]
-            self._temp_updated_edge_attr = self.edge_norm(edge_attr + delta_edge)
-
-        # 差分多头注意力计算
-        # q只用目标节点特征，k,v用融合后的mem. x_i = edge_index[1], x_j = edge_index[0]
-        q = self.q_proj(x_i).view(-1, self.heads, 2, self.d_head)  # [E, H, 2, d_h]
-        k = self.k_proj(mem).view(-1, self.heads, 2, self.d_head)
-        v = self.v_proj(mem).view(-1, self.heads, 2 * self.d_head)  # [E, H, 2*d_h]
-
-        q1, q2 = q[:, :, 0], q[:, :, 1]  # [E, H, d_h]
-        k1, k2 = k[:, :, 0], k[:, :, 1]
-
-        attn_logits1 = (q1 * k1).sum(dim=-1) / (self.d_head ** 0.5)  # [E, H]
-        attn_logits2 = (q2 * k2).sum(dim=-1) / (self.d_head ** 0.5)  # [E, H]
-        attn1 = pyg_softmax(attn_logits1, edge_index[1])  # [E, H]
-        attn2 = pyg_softmax(attn_logits2, edge_index[1])  # [E, H]
-
-        lambda_exp = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1)) - torch.exp(
-            torch.sum(self.lambda_q2 * self.lambda_k2)) + self.lambda_init
-
-        attn = attn1 - attn2 * lambda_exp  # [E, H]
-        attn = self.dropout(attn).unsqueeze(-1)  # [E, H, 1]
-
-        out = attn * v  # [E, H, 2*d_h]
-
-        # 归一化 + reshape回d_model维度
-        out = out.reshape(-1, self.d_model)
-
-        # 最后线性变换
-        return self.out_proj(out)
-
-    def update(self, aggr_out: torch.Tensor) -> torch.Tensor:
-        # propagate结束后调用，将聚合的消息返回, 聚合x_i->edge_index[1]
-        return aggr_out
-
 class EdgeAwareGATFusion(nn.Module):
     def __init__(self, device, cfg):
         super(EdgeAwareGATFusion, self).__init__()
@@ -866,104 +486,36 @@ class EdgeAwareGATFusion(nn.Module):
         num_layers = cfg['n_scene_layer']
         dropout = cfg['dropout']
         self.num_layers = cfg['n_scene_layer']
-        self.layernorm = nn.LayerNorm(d_model)
-        self.token_fuse_mode = cfg.get('token_fuse_mode', 'last')
-        self.use_nnconv = cfg['use_nnconv']
 
-        if cfg['use_diff_mha']:
-            self.l2a2l = nn.ModuleList(
-                EdgeAwareGATLayerWithDiffAttn(d_model=d_model,
-                                              d_edge=d_model,
-                                              d_ffn=2 * d_model,
-                                              heads=int(num_heads/2),
-                                              dropout=dropout,
-                                              depth=i)
-                for i in range(num_layers)
-            )
-        else:
-            self.l2a2l = nn.ModuleList(
-                EdgeAwareGATLayer(d_model=d_model,
-                                  d_edge=d_model,
-                                  d_ffn=2 * d_model,
-                                  heads=num_heads,
-                                  dropout=dropout,
-                                  use_fusion_gate=cfg['use_fusion_gate'],
-                                  use_SwiGLU_fnn=cfg['use_SwiGLU_fnn'])
-                for _ in range(num_layers)
-            )
+        self.l2a2l = nn.ModuleList(
+            EdgeAwareGATLayer(d_model=d_model,
+                                d_edge=d_model,
+                                d_ffn=2 * d_model,
+                                heads=num_heads,
+                                dropout=dropout)
+            for _ in range(num_layers)
+        )
         self.proj_a2l_l2a_rpe = nn.Sequential(
             nn.Linear(d_rpe_in, d_model),
             nn.LayerNorm(d_model),
             nn.ReLU(inplace=True)
         )
-        self.proj_l2l_encoder = nn.Linear(d_model,d_model)
 
-        # Token fusion
-        if self.token_fuse_mode == 'concat_mlp':
-            self.token_fused_proj = nn.Sequential(
-                nn.Linear(d_model * num_layers, d_model),
-                nn.LayerNorm(d_model),
-                nn.ReLU(inplace=True)
-            )
-        elif self.token_fuse_mode == 'weighted_sum':
-            self.token_weights = nn.Parameter(torch.ones(num_layers))
-        elif self.token_fuse_mode == 'attn':
-            self.token_layer_attn = nn.MultiheadAttention(
-                                embed_dim=d_model, num_heads=4, 
-                                batch_first=True, dropout=dropout)
-            self.token_ln = nn.LayerNorm(d_model)
-        elif self.token_fuse_mode == 'res':
-            self.res_fused = nn.ModuleList(
-                DynamicDenseConnection(d_model, i)
-                for i in range(1, num_layers)
-            )
+        self.res_fused = nn.ModuleList(
+            DynamicDenseConnection(d_model, i)
+            for i in range(1, num_layers)
+        )
         
-
-        if self.use_nnconv:
-            self.shared_edge_mlp = nn.Sequential(
-                nn.Linear(cfg["d_rpe_in"], d_model * d_model),
-                nn.LayerNorm(d_model * d_model),
-                nn.ReLU(inplace=True)
+        self.l2l = nn.ModuleList(
+                GCN2Conv(
+                    channels=d_model,
+                    alpha=0.1,
+                    theta=0.5,
+                    shared_weights=False,
+                    layer=i + 1
+                )
+                for i in range(num_layers)
             )
-            self.l2l = nn.ModuleList(
-                NNConv(d_model, d_model, 
-                       nn=self.shared_edge_mlp, 
-                       aggr='add')
-                for _ in range(num_layers)
-                )
-        else:
-            self.l2l = nn.ModuleList(
-                    GCN2Conv(
-                        channels=d_model,
-                        alpha=0.1,
-                        theta=0.5,
-                        shared_weights=False,
-                        layer=i + 1
-                    )
-                    for i in range(num_layers)
-                )
-            
-
-    def fuse_tokens(self, token_list):
-            if self.token_fuse_mode == 'last':
-                return token_list[-1]
-
-            elif self.token_fuse_mode == 'concat_mlp':
-                token_cat = torch.cat(token_list, dim=-1)  # [N, L*d]
-                return self.token_fused_proj(token_cat)
-
-            elif self.token_fuse_mode == 'weighted_sum':
-                stack = torch.stack(token_list, dim=0)  # [L, N, d]
-                weights = F.softmax(self.token_weights, dim=0)  # [L]
-                return (stack * weights[:, None, None]).sum(dim=0)  # [N, d]
-
-            elif self.token_fuse_mode == 'attn':
-                stack = torch.stack(token_list, dim=1)  # [N, L, d]
-                fused, _ = self.token_layer_attn(stack, stack, stack)
-                return self.token_ln(fused.mean(dim=1))  # mean pooling
-
-            else:
-                raise ValueError(f"Unknown token_fuse_mode: {self.token_fuse_mode}")
             
     def forward(self, actors, actor_idcs, lanes, lane_idcs, rpes, l2l_attr, a2a_attr):
         a2a_fusion_edges = rpes['a2a_fusion_edges']
@@ -977,7 +529,6 @@ class EdgeAwareGATFusion(nn.Module):
         lane_global_ids = []
         actor_global_ids = []
         offset = 0  # 当前拼接 token 的起始位置
-        # todo: 加入原始token?
         for lane_ids, actor_ids in zip(lane_idcs, actor_idcs):
             # 拼接每个场景的 actor + lane 特征
             token_piece = torch.cat([actors[actor_ids], lanes[lane_ids]], dim=0)
@@ -1009,234 +560,11 @@ class EdgeAwareGATFusion(nn.Module):
                 token = self.res_fused[i](token, token_list)
             token_list.append(token)
         
-        
-        # token_fused = self.fuse_tokens(token_list)
         token_fused = token
         actors_list = [token_fused[idx] for idx in actor_global_ids]
         lanes_list  = [token_fused[idx] for idx in lane_global_ids]
 
         return actors_list, lanes_list
-
-
-class SftLayer(nn.Module):
-    def __init__(self,
-                 device,
-                 d_edge: int = 128,
-                 d_model: int = 128,
-                 d_ffn: int = 2048,
-                 n_head: int = 8,
-                 dropout: float = 0.1,
-                 update_edge: bool = True) -> None:
-        super(SftLayer, self).__init__()
-        self.device = device
-        self.update_edge = update_edge
-
-        self.proj_memory = nn.Sequential(
-            nn.Linear(d_model + d_model + d_edge, d_model),
-            nn.LayerNorm(d_model),
-            nn.ReLU(inplace=True)
-        )
-
-        if self.update_edge:
-            self.proj_edge = nn.Sequential(
-                nn.Linear(d_model, d_edge),
-                nn.LayerNorm(d_edge),
-                nn.ReLU(inplace=True)
-            )
-            self.norm_edge = nn.LayerNorm(d_edge)
-
-        self.multihead_attn = MultiheadAttention(
-            embed_dim=d_model, num_heads=n_head, dropout=dropout, batch_first=False)
-
-        # Feedforward model
-        self.linear1 = nn.Linear(d_model, d_ffn)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(d_ffn, d_model)
-
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-        self.activation = nn.ReLU(inplace=True)
-
-    def forward(self,
-                node: Tensor,
-                edge: Tensor,
-                edge_mask: Optional[Tensor]) -> Tensor:
-        '''
-            input:
-                node:       (N, d_model)
-                edge:       (N, N, d_model)
-                edge_mask:  (N, N)
-        '''
-        # update node
-        x, edge, memory = self._build_memory(node, edge)
-        x_prime, _ = self._mha_block(x, memory, attn_mask=None, key_padding_mask=edge_mask)
-        x = self.norm2(x + x_prime).squeeze()
-        x = self.norm3(x + self._ff_block(x))
-        return x, edge, None
-
-    def _build_memory(self,
-                      node: Tensor,
-                      edge: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        '''
-            input:
-                node:   (N, d_model)
-                edge:   (N, N, d_edge)
-            output:
-                :param  (1, N, d_model)
-                :param  (N, N, d_edge)
-                :param  (N, N, d_model)
-        '''
-        n_token = node.shape[0]
-
-        # 1. build memory
-        src_x = node.unsqueeze(dim=0).repeat([n_token, 1, 1])  # (N, N, d_model)
-        tar_x = node.unsqueeze(dim=1).repeat([1, n_token, 1])  # (N, N, d_model)
-        memory = self.proj_memory(torch.cat([edge, src_x, tar_x], dim=-1))  # (N, N, d_model)
-        # 2. (optional) update edge (with residual)
-        if self.update_edge:
-            edge = self.norm_edge(edge + self.proj_edge(memory))  # (N, N, d_edge)
-
-        return node.unsqueeze(dim=0), edge, memory
-
-    # multihead attention block
-    def _mha_block(self,
-                   x: Tensor,
-                   mem: Tensor,
-                   attn_mask: Optional[Tensor],
-                   key_padding_mask: Optional[Tensor]) -> Tensor:
-        '''
-            input:
-                x:                  [1, N, d_model]
-                mem:                [N, N, d_model]
-                attn_mask:          [N, N]
-                key_padding_mask:   [N, N]
-            output:
-                :param      [1, N, d_model]
-                :param      [N, N]
-        '''
-        x, _ = self.multihead_attn(x, mem, mem,
-                                   attn_mask=attn_mask,
-                                   key_padding_mask=key_padding_mask,
-                                   need_weights=False)  # return average attention weights
-        return self.dropout2(x), None
-
-    # feed forward block
-    def _ff_block(self,
-                  x: Tensor) -> Tensor:
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.dropout3(x)
-
-
-class SymmetricFusionTransformer(nn.Module):
-    def __init__(self,
-                 device,
-                 d_model: int = 128,
-                 d_edge: int = 128,
-                 n_head: int = 8,
-                 n_layer: int = 6,
-                 dropout: float = 0.1,
-                 update_edge: bool = True):
-        super(SymmetricFusionTransformer, self).__init__()
-        self.device = device
-
-        fusion = []
-        for i in range(n_layer):
-            need_update_edge = False if i == n_layer - 1 else update_edge
-            fusion.append(SftLayer(device=device,
-                                   d_edge=d_edge,
-                                   d_model=d_model,
-                                   d_ffn=d_model*2,
-                                   n_head=n_head,
-                                   dropout=dropout,
-                                   update_edge=need_update_edge))
-        self.fusion = nn.ModuleList(fusion)
-
-
-    def forward(self, x: Tensor, edge: Tensor, edge_mask: Tensor) -> Tensor:
-        '''
-            x: (N, d_model)
-            edge: (d_model, N, N)
-            edge_mask: (N, N)
-        '''
-        # attn_multilayer = []
-        # token_list = []
-        # token_list.append(x)
-        for i, mod in enumerate(self.fusion):
-            x, edge, _ = mod(x, edge, edge_mask)
-            # x = self.res_layer[i](x, token_list)
-            # token_list.append(x)
-            # attn_multilayer.append(attn)
-        return x, None
-
-
-class FusionNet(nn.Module):
-    def __init__(self, device, config):
-        super(FusionNet, self).__init__()
-        self.device = device
-
-        d_embed = config['d_embed']
-        dropout = config['dropout']
-        update_edge = config['update_edge']
-
-        self.proj_actor = nn.Sequential(
-            nn.Linear(config['d_actor'], d_embed),
-            nn.LayerNorm(d_embed),
-            nn.ReLU(inplace=True)
-        )
-        self.proj_lane = nn.Sequential(
-            nn.Linear(config['d_lane'], d_embed),
-            nn.LayerNorm(d_embed),
-            nn.ReLU(inplace=True)
-        )
-        self.proj_rpe_scene = nn.Sequential(
-            nn.Linear(config['d_rpe_in'], config['d_rpe']),
-            nn.LayerNorm(config['d_rpe']),
-            nn.ReLU(inplace=True)
-        )
-
-        self.fuse_scene = SymmetricFusionTransformer(self.device,
-                                                     d_model=d_embed,
-                                                     d_edge=config['d_rpe'],
-                                                     n_head=config['n_scene_head'],
-                                                     n_layer=config['n_scene_layer'],
-                                                     dropout=dropout,
-                                                     update_edge=update_edge)
-
-    def forward(self,
-                actors: Tensor,
-                actor_idcs: List[Tensor],
-                lanes: Tensor,
-                lane_idcs: List[Tensor],
-                rpe_prep: Dict[str, Tensor]):
-        # print('actors: ', actors.shape)
-        # print('actor_idcs: ', [x.shape for x in actor_idcs])
-        # print('lanes: ', lanes.shape)
-        # print('lane_idcs: ', [x.shape for x in lane_idcs])
-
-        # projection
-        actors = self.proj_actor(actors)
-        lanes = self.proj_lane(lanes)
-
-        actors_new, lanes_new = list(), list()
-        for a_idcs, l_idcs, rpes in zip(actor_idcs, lane_idcs, rpe_prep):
-            # * fusion - scene
-            _actors = actors[a_idcs]
-            _lanes = lanes[l_idcs]
-            tokens = torch.cat([_actors, _lanes], dim=0)  # (N, d_model)
-            rpe = self.proj_rpe_scene(rpes['scene'].permute(1, 2, 0))  # (N, N, d_rpe)
-            out, _ = self.fuse_scene(tokens, rpe, rpes['scene_mask'])
-
-            actors_new.append(out[:len(a_idcs)])
-            lanes_new.append(out[len(a_idcs):])
-        # print('actors: ', [x.shape for x in actors_new])
-        # print('lanes: ', [x.shape for x in lanes_new])
-        actors = torch.cat(actors_new, dim=0)
-        lanes = torch.cat(lanes_new, dim=0)
-        # print('actors: ', actors.shape)
-        # print('lanes: ', lanes.shape)
-        return actors, lanes
 
 #* 4. Decoder
 
@@ -1831,13 +1159,13 @@ class Simpl(nn.Module):
         actors_list, lanes_list = self.fusion_net(actors, actor_idcs, lanes, lane_idcs, rpes, a2a_attr, l2l_attr)
         # * decoding
         # out = self.pred_net(actors_list, lanes_list, pose)
-        if self.decoder_type == 'MLP':
-            actors = torch.cat(actors_list,dim=0)
-            out = self.pred_net(actors, actor_idcs)
-        elif self.decoder_type == 'QueryBased':
-            out = self.pred_net(actors_list, lanes_list, pose)
-        elif self.decoder_type == 'GlobalQueryRefine':
-            out = self.pred_net(actors_list, lanes_list, pose)
+        # if self.decoder_type == 'MLP':
+        #     actors = torch.cat(actors_list,dim=0)
+        #     out = self.pred_net(actors, actor_idcs)
+        # elif self.decoder_type == 'QueryBased':
+        #     out = self.pred_net(actors_list, lanes_list, pose)
+        # elif self.decoder_type == 'GlobalQueryRefine':
+        out = self.pred_net(actors_list, lanes_list, pose)
 
         return out
     

@@ -72,7 +72,8 @@ def main():
 
     faulthandler.enable()
     # for av2
-    data_dir = os.path.join("/home/nvidia/ltp/Dataset/AV2", args.mode)
+    # data_dir = os.path.join("/home/nvidia/ltp/Dataset/AV2", args.mode)
+    data_dir = os.path.join("/host_home/AV2", args.mode)
     date_set = 'av1'
     if "av2" in args.features_dir:
         date_set = 'av2'
@@ -93,7 +94,7 @@ def main():
     dl_val = DataLoader(test_set,
                         batch_size=args.val_batch_size,
                         shuffle=False,
-                        num_workers=8,
+                        num_workers=32,
                         collate_fn=test_set.collate_fn,
                         drop_last=False,
                         pin_memory=True)
