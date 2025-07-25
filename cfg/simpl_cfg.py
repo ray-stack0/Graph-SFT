@@ -60,12 +60,12 @@ class AdvCfg():
         self.loss_cfg["use_aWTA"] = True
         self.loss_cfg["use_aWTA_cls"] = True
         if self.loss_cfg["use_aWTA_cls"]:
-            self.loss_cfg["exp_base_cls"] = 0.83
-            self.loss_cfg["init_temperature_cls"] = 10
+            self.loss_cfg["exp_base_cls"] = 0.834
+            self.loss_cfg["init_temperature_cls"] = 8
             self.loss_cfg["cls_mode"] = "ade_kl" # ade_kl/fde_kl
         if self.loss_cfg['use_aWTA']:
-            self.loss_cfg["exp_base_reg"] = 0.83
-            self.loss_cfg["init_temperature_reg"] = 10
+            self.loss_cfg["exp_base_reg"] = 0.834
+            self.loss_cfg["init_temperature_reg"] = 8
 
         #* opt cfg
         self.opt_cfg = dict()
@@ -92,7 +92,7 @@ class AdvCfg():
         elif self.opt_cfg['scheduler'] == 'polyline':
             self.opt_cfg['init_lr'] = 1e-4
             self.opt_cfg['milestones'] = [0, 5, 35, 40]
-            self.opt_cfg['values'] = [1e-4, 5e-4, 5e-4, 1e-4]
+            self.opt_cfg['values'] = [1e-4, 6e-4, 6e-4, 1e-4]
 
         
         #* eval cfg

@@ -167,12 +167,10 @@ class LossFunc(nn.Module):
 
         row_idcs = torch.arange(len(last_idcs)).long().to(self.device)
         #* fde
-        diff = _reg[:, :, last_idcs, :] - gt_preds[:, last_idcs, :].unsqueeze(1).expand(-1, num_modes, -1)
+        diff = _reg[row_idcs, :, last_idcs, :] - gt_preds[row_idcs, last_idcs, :].unsqueeze(1).expand(-1, num_modes, -1)
         fde = torch.sqrt((diff ** 2).sum(dim=-1)) # {N_a,k}
         min_dist, min_idcs = fde.min(1)
 
-        #* ade
-        ade = compute_ade(reg, gt_preds, has_preds) # [N,K], ade
         #* cls
         if not self.use_aWTA_cls:
             mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
@@ -184,6 +182,8 @@ class LossFunc(nn.Module):
             cls_loss = (self.config["mgn"] * mask.sum() - mgn[mask].sum()) / (num_cls + 1e-10)
         else:
             if self.cls_mode == 'ade_kl':
+                #* ade
+                ade = compute_ade(reg, gt_preds, has_preds) # [N,K], ade
                 cls_loss = self.compute_cls_loss(cls, ade, last_idcs, self.cls_mode)
             else:
                 cls_loss = self.compute_cls_loss(cls, fde, last_idcs, self.cls_mode)
