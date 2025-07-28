@@ -34,7 +34,7 @@ class ArgoDataset(Dataset):
         self.pred_len = pred_len
         self.seq_len = obs_len + pred_len
 
-        self.l2a_dist_th = 40
+        self.l2a_dist_th = 50
 
         if self.verbose:
             print('[Dataset] Dataset Info:')

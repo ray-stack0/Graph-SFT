@@ -99,11 +99,13 @@ def main():
         experiment_name=args.experiment_name)
     
     #* dataloader
+    data_ver = loader.adv_cfg.get_eval_cfg()['data_ver']
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
                           num_workers=16,
-                          prefetch_factor=4,
+                          prefetch_factor=3,
+                          persistent_workers = True,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           sampler=train_sampler,
@@ -113,7 +115,7 @@ def main():
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
                         num_workers=16,
-                        prefetch_factor=4,
+                        prefetch_factor=2,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         sampler=val_sampler,
@@ -223,7 +225,7 @@ def main():
                         swanlab.log({"val/loss/": val_loss_meter.get_avg_dict()}, step=epoch)
                     if epoch >= args.train_epoches / 2:
                         if val_eval_meter.metrics[rank_metric].avg < best_metric:
-                            model_name = '{}_ddp_best.tar'.format(net_name)
+                            model_name = '{}_{}_ddp_best.tar'.format(net_name,data_ver)
                             
                             save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
                             best_metric = val_eval_meter.metrics[rank_metric].avg

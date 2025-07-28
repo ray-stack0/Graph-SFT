@@ -25,7 +25,7 @@ class AV2Dataset(Dataset):
         self.mode = mode
         self.aug = aug
         self.verbose = verbose
-        self.l2a_dist_th = 40
+        self.l2a_dist_th = 50
 
         self.dataset_files = []
         self.dataset_len = -1

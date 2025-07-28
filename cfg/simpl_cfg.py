@@ -91,8 +91,8 @@ class AdvCfg():
             self.opt_cfg['gamma'] = 0.1
         elif self.opt_cfg['scheduler'] == 'polyline':
             self.opt_cfg['init_lr'] = 1e-4
-            self.opt_cfg['milestones'] = [0, 5, 35, 40]
-            self.opt_cfg['values'] = [1e-4, 6e-4, 6e-4, 1e-4]
+            self.opt_cfg['milestones'] = [0, 5, 25, 30, 35, 40]
+            self.opt_cfg['values'] = [1e-4, 6e-4, 6e-4, 3e-4, 3e-4, 1e-4]
 
         
         #* eval cfg

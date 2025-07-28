@@ -29,10 +29,10 @@ class ArgoPreproc():
         self.viz = args.viz
         self.mode = args.mode
 
-        self.MAP_RADIUS = 50.0 # 车道搜索半径
+        self.MAP_RADIUS = 80.0 # 车道搜索半径
         self.num_scales = 5
 
-        self.SEG_LENGTH = 2  # 采样间距
+        self.SEG_LENGTH = 1  # 采样间距
 
         self.argo_map = ArgoverseMap()
 

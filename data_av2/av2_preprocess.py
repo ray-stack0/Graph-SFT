@@ -30,7 +30,7 @@ class ArgoPreprocAV2():
 
         self.FAR_DIST_THRES = 20.0
 
-        self.SEG_LENGTH = 2  # 采样的距离
+        self.SEG_LENGTH = 1.5  # 采样的距离
 
         if self.debug:
             # self.map_vis = ArgoMapVisualizer()
