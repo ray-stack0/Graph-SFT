@@ -93,29 +93,30 @@ def main():
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
                           shuffle=True,
-                          num_workers=8,
-                          prefetch_factor=2,
+                          num_workers=64,
+                          prefetch_factor=4,
+                          persistent_workers = True,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
                           pin_memory=True)
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
                         shuffle=False,
-                        num_workers=8,
+                        num_workers=16,
                         prefetch_factor=2,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         pin_memory=True)
     
     # 记录计算量
-    batch = next(iter(dl_val))
-    input = net.pre_process(batch)
-    macs, flops, params, parameter_count_table= get_pf(net, input)
-    logger.print(f"[Model Stats]")
-    logger.print(f"  - MACs:      {macs}")
-    logger.print(f"  - Parameters:{params}")
-    logger.print(f"  - FLOPs:     {flops / 1e9:.2f}G")
-    logger.print("  - Parameter breakdown:\n" + parameter_count_table)
+    # batch = next(iter(dl_val))
+    # input = net.pre_process(batch)
+    # macs, flops, params, parameter_count_table= get_pf(net, input)
+    # logger.print(f"[Model Stats]")
+    # logger.print(f"  - MACs:      {macs}")
+    # logger.print(f"  - Parameters:{params}")
+    # logger.print(f"  - FLOPs:     {flops / 1e9:.2f}G")
+    # logger.print("  - Parameter breakdown:\n" + parameter_count_table)
 
 
     best_metric = loader.get_best_metric()

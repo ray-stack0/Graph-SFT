@@ -12,12 +12,12 @@
 # sleep 30
 CUDA_VISIBLE_DEVICES="0,1,2,3" torchrun --nproc_per_node 4 train_ddp.py \
   --features_dir data_argo/features/ \
-  --train_batch_size 16 \
-  --val_batch_size 16 \
-  --val_interval 3 \
+  --train_batch_size 32 \
+  --val_batch_size 32 \
+  --val_interval 5 \
   --train_epoches 50 \
   --use_cuda \
   --data_aug \
   --logger_writer \
   --adv_cfg_path cfg.simpl_cfg \
-  --experiment_name av1-0727-1m
+  --experiment_name av1-M2

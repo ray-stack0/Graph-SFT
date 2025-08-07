@@ -146,7 +146,7 @@ class ActorNet(nn.Module):
     Actor feature extractor with Conv1D
     """
 
-    def __init__(self, n_in=3, hidden_size=128, n_fpn_scale=4, num_layers=2, dropout=0.1, d_rpe_in = 8):
+    def __init__(self, n_in=3, hidden_size=128, n_fpn_scale=4, num_layers=2, dropout=0.1, d_rpe_in = 8, n_a2a_head = 8):
         super(ActorNet, self).__init__()
         norm = "GN"
         ng = 1
@@ -179,7 +179,7 @@ class ActorNet(nn.Module):
         if num_layers != 0:
             self.a2a = nn.ModuleList(
                 EdgeAwareGATLayer(d_model = hidden_size, d_edge=hidden_size,
-                                heads=8, dropout=dropout, d_ffn=2*hidden_size)
+                                heads=n_a2a_head, dropout=dropout, d_ffn=2*hidden_size)
                                 for _ in range(num_layers)
             )
             self.proj_a2a_rpes = nn.Sequential(
@@ -413,7 +413,8 @@ class Point_RPE_MAP_Encoder(nn.Module):
             d_model: int = 128,
             dropout: int = 0.1,
             num_layers: int = 2,
-            d_rpe_in: int = 8
+            d_rpe_in: int = 8,
+            n_l2l_head: int = 8
     ):
         super(Point_RPE_MAP_Encoder, self).__init__()
 
@@ -445,7 +446,7 @@ class Point_RPE_MAP_Encoder(nn.Module):
 
         self.l2l = nn.ModuleList(
             EdgeAwareGATLayer(d_model = d_model, d_edge=d_model,
-                              heads=8, dropout=dropout, d_ffn=2*d_model)
+                              heads=n_l2l_head, dropout=dropout, d_ffn=2*d_model)
                               for _ in range(num_layers)
         )
 
@@ -653,6 +654,9 @@ class ModeQueryRefineDecoder(nn.Module):
             nn.Linear(2 * self.d_model, self.d_model),
             nn.LayerNorm(self.d_model),
             nn.ReLU(inplace=True),
+            nn.Linear(self.d_model, self.d_model),
+            nn.LayerNorm(self.d_model),
+            nn.ReLU(inplace=True),
             nn.Linear(self.d_model , 1)
         )
 
@@ -674,7 +678,7 @@ class ModeQueryRefineDecoder(nn.Module):
             # nn.Dropout(dropout),
             nn.Linear(self.d_model, self.T * 2)
         )
-        self.offset_scale = 1  # 可调的偏移缩放系数
+        self.offset_scale = 1.0  # 可调的偏移缩放系数
 
         nn.init.zeros_(self.refine_mlp[-1].weight)
         nn.init.zeros_(self.refine_mlp[-1].bias)
@@ -709,13 +713,15 @@ class ModeQueryRefineDecoder(nn.Module):
         offset_embed = offset_embed.unsqueeze(2).repeat(1, 1, K, 1)  # [B, N_a, K, D]
 
         # 4. 微调轨迹
-        fused_embed = torch.cat([offset_embed, embed.detach()], dim=-1)  # [B, N_a, K, D*2]
+        fused_embed = torch.cat([offset_embed, embed], dim=-1)  # [B, N_a, K, D*2]
+        # fused_embed = torch.cat([offset_embed, embed.detach()], dim=-1)  # [B, N_a, K, D*2]
         offset = self.refine_mlp(fused_embed).view(B, N_a, K, -1, 2)   # [B, N_a, K, T, 2]
         # gate = self.offset_gate(fused_embed).view(B, N_a, K, 1, 1)  # [B, N_a, K, 1]
         traj = traj + (offset * self.offset_scale)                        # [B, N_a, K, T, 2]
         vel = torch.gradient(traj, dim=-2)[0] / 0.1
         # 5. 计算模态置信度
-        conf = self.cls(torch.cat([offset_embed.detach(), embed], dim=-1)).view(B, N_a, K)
+        # conf = self.cls(torch.cat([offset_embed.detach(), embed], dim=-1)).view(B, N_a, K)
+        conf = self.cls_refine(fused_embed).view(B, N_a, K)
         if self.out_prob:
             conf = F.softmax(conf,dim=-1)
         res_traj, res_conf, res_aux = [], [], []
@@ -970,7 +976,7 @@ class MLPDecoder(nn.Module):
         self.num_modes = config['g_num_modes']
         self.param_out = config['param_out']  # parametric output: bezier/monomial/none
         self.N_ORDER = config['param_order']
-
+        self.out_prob = config['out_prob']
         dim_mm = self.hidden_size * self.num_modes
         dim_inter = dim_mm // 2
         self.multihead_proj = nn.Sequential(
@@ -1074,7 +1080,8 @@ class MLPDecoder(nn.Module):
         # print('embed: ', embed.shape)  # e.g., [6, 159, 128]
 
         cls = self.cls(embed).view(self.num_modes, -1).permute(1, 0)  # e.g., [159, 6]
-        cls = F.softmax(cls * 1.0, dim=1)  # e.g., [159, 6]
+        if self.out_prob:
+            cls = F.softmax(cls * 1.0, dim=1)  # e.g., [159, 6]
 
         if self.param_out == 'bezier':
             param = self.reg(embed).view(self.num_modes, -1, self.N_ORDER + 1, 2)  # e.g., [6, 159, N_ORDER + 1, 2]
@@ -1119,14 +1126,15 @@ class Simpl(nn.Module):
                                   n_fpn_scale=cfg['n_fpn_scale'],
                                   num_layers=cfg['num_a2a_layer'],
                                   dropout=cfg['dropout'],
-                                  d_rpe_in=cfg['rpe_type_d'])
+                                  d_rpe_in=cfg['rpe_type_d'],
+                                  n_a2a_head=cfg['n_a2a_head'])
 
         # self.lane_net = LaneNet(device=self.device,
         #                         in_size=cfg['in_lane'],
         #                         hidden_size=cfg['d_lane'],
         #                         dropout=cfg['dropout'])
         self.lane_net = Point_RPE_MAP_Encoder(input_dim=cfg['in_lane'], d_model=cfg['d_lane'],
-                                                  dropout=cfg['dropout'], num_layers=cfg['num_l2l_layer'],d_rpe_in=cfg['rpe_type_d'])
+                                                  dropout=cfg['dropout'], num_layers=cfg['num_l2l_layer'],d_rpe_in=cfg['rpe_type_d'],n_l2l_head=cfg['n_l2l_head'])
 
         # self.fusion_net = FusionNet(device=self.device,
         #                             config=cfg)
@@ -1159,13 +1167,13 @@ class Simpl(nn.Module):
         actors_list, lanes_list = self.fusion_net(actors, actor_idcs, lanes, lane_idcs, rpes, a2a_attr, l2l_attr)
         # * decoding
         # out = self.pred_net(actors_list, lanes_list, pose)
-        # if self.decoder_type == 'MLP':
-        #     actors = torch.cat(actors_list,dim=0)
-        #     out = self.pred_net(actors, actor_idcs)
-        # elif self.decoder_type == 'QueryBased':
-        #     out = self.pred_net(actors_list, lanes_list, pose)
-        # elif self.decoder_type == 'GlobalQueryRefine':
-        out = self.pred_net(actors_list, lanes_list, pose)
+        if self.decoder_type == 'MLP':
+            actors = torch.cat(actors_list,dim=0)
+            out = self.pred_net(actors, actor_idcs)
+        elif self.decoder_type == 'QueryBased':
+            out = self.pred_net(actors_list, lanes_list, pose)
+        elif self.decoder_type == 'GlobalQueryRefine':
+            out = self.pred_net(actors_list, lanes_list, pose)
 
         return out
     

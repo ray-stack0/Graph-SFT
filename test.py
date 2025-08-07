@@ -71,11 +71,10 @@ def main():
     print('Args: {}\n'.format(args))
 
     faulthandler.enable()
-    # for av2
-    # data_dir = os.path.join("/home/nvidia/ltp/Dataset/AV2", args.mode)
-    data_dir = os.path.join("/host_home/AV2", args.mode)
+    
     date_set = 'av1'
     if "av2" in args.features_dir:
+        data_dir = os.path.join("/host_home/ltp/Dataset/AV2", args.mode)
         date_set = 'av2'
 
     if args.use_cuda and torch.cuda.is_available():
@@ -160,7 +159,7 @@ def main():
         submission = ChallengeSubmission(preds)
 
         # 2. 保存为 parquet 文件（可提交）
-        submission.to_parquet(Path("submission_av2.parquet"))
+        submission.to_parquet(Path("submission_av2_805_epoch50.parquet"))
     print('\nExit...')
 
 

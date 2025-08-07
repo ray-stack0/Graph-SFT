@@ -8,7 +8,7 @@ class AdvCfg():
         self.g_cfg['g_num_modes'] = 6
         self.g_cfg['g_obs_len'] = 50
         self.g_cfg['g_pred_len'] = 60
-        self.g_cfg['out_prob'] = False
+        self.g_cfg['out_prob'] = True
 
         #* dataset config
         self.data_cfg = dict()
@@ -27,6 +27,8 @@ class AdvCfg():
         self.net_cfg["num_l2l_layer"] = 3 #* 编码的层数
         self.net_cfg["edge_type_d"] = 5
         self.net_cfg["rpe_type_d"] = 5 + self.net_cfg["edge_type_d"]
+        self.net_cfg["n_a2a_head"] = 8
+        self.net_cfg["n_l2l_head"] = 8
 
         self.net_cfg["d_rpe_in"] = 5
         self.net_cfg["d_rpe"] = 128
@@ -61,6 +63,7 @@ class AdvCfg():
         self.loss_cfg["use_aWTA"] = True
         self.loss_cfg["use_aWTA_cls"] = True
         if self.loss_cfg["use_aWTA_cls"]:
+            self.g_cfg['out_prob'] = False
             self.loss_cfg["exp_base_cls"] = 0.834
             self.loss_cfg["init_temperature_cls"] = 8
             self.loss_cfg["cls_mode"] = "ade_kl" # ade_kl/fde_kl
@@ -91,9 +94,9 @@ class AdvCfg():
             self.opt_cfg['step_size'] = 40
             self.opt_cfg['gamma'] = 0.1
         elif self.opt_cfg['scheduler'] == 'polyline':
-            self.opt_cfg['init_lr'] = 1e-4
-            self.opt_cfg['milestones'] = [0, 5, 35, 40]
-            self.opt_cfg['values'] = [1e-4, 6e-4, 6e-4, 1e-4]
+            self.opt_cfg['init_lr'] = 2e-4
+            self.opt_cfg['milestones'] = [0, 5, 25, 30, 35, 40]
+            self.opt_cfg['values'] = [2e-4, 2e-3, 2e-3, 1e-3, 1e-3, 2e-4]
 
         # * eval config
         self.eval_cfg = dict()

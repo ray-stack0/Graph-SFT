@@ -104,7 +104,7 @@ def main():
     dl_train = DataLoader(train_set,
                           batch_size=args.train_batch_size,
                           num_workers=16,
-                          prefetch_factor=3,
+                          prefetch_factor=4,
                           persistent_workers = True,
                           collate_fn=train_set.collate_fn,
                           drop_last=True,
@@ -115,7 +115,7 @@ def main():
     dl_val = DataLoader(val_set,
                         batch_size=args.val_batch_size,
                         num_workers=16,
-                        prefetch_factor=2,
+                        prefetch_factor=4,
                         collate_fn=val_set.collate_fn,
                         drop_last=True,
                         sampler=val_sampler,
@@ -170,7 +170,7 @@ def main():
         #     logger.add_scalar(title='train/{}'.format(key), value=elem.avg, it=epoch)
 
         dist.barrier()  # sync
-        if ((epoch + 1) % args.val_interval == 0) or epoch > 25:
+        if ((epoch + 1) % args.val_interval == 0) or epoch > 35:
             # * Validation
             with torch.no_grad():
                 val_start = time.time()
@@ -236,10 +236,10 @@ def main():
             if args.logger_writer:
                 swanlab.log({"train/loss/": train_loss_meter.get_avg_dict()}, step=epoch)
                 swanlab.log({"train/metric/": train_eval_meter.get_avg_dict()}, step=epoch)
-            # if int(100 * epoch / args.train_epoches) in [20, 40, 60, 80] or (epoch > int(args.train_epoches * 0.8)):
-            #     model_name = '{}_ddp_ckpt_epoch{}.tar'.format(net_name, epoch)
-            #     save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
-            #     logger.print('Save the model to {}'.format('saved_models/' + model_name))
+            if epoch >= 40:
+                model_name = '{}_ddp_ckpt_epoch{}.tar'.format(net_name, epoch)
+                save_ckpt(net.module, optimizer, epoch, save_dir, model_name)
+                logger.print('Save the model to {}'.format('saved_models/' + model_name))
 
     logger.print("\nTraining completed in {:.2f} mins".format((time.time() - start_time) / 60.0))
 
